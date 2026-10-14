@@ -1,20 +1,22 @@
 # webToAgent
 
-在瀏覽器圈選 HTML 元素，記住多筆修改需求後一次送到 CLI Agent（Claude Code）處理，修改完成後頁面自動重新整理。
+English | [繁體中文](README.zh-TW.md)
 
-## 從 GitHub 安裝
+Pick HTML elements in the browser, queue up multiple change requests, and send them to a CLI agent (Claude Code) in one batch. The page reloads automatically after the changes are made.
 
-需要 Node.js 20 以上、git、bash (macOS 或 Windows 的 WSL)，以及 Claude Code。零相依套件，不需要 `npm install`。
+## Install from GitHub
 
-### 讓 Claude Code 幫你裝
+Requires Node.js 20+, git, bash (macOS or WSL on Windows), and Claude Code. No dependencies, no `npm install` needed.
 
-在 Claude Code 中貼上：
+### Let Claude Code install it
+
+Paste this into Claude Code:
 
 ```text
-請照 https://github.com/idben/webToAgent 的 README 安裝 webToAgent skill
+Install the webToAgent skill by following the README at https://github.com/idben/webToAgent
 ```
 
-### 自己安裝
+### Install manually
 
 ```bash
 git clone https://github.com/idben/webToAgent.git
@@ -22,57 +24,59 @@ cd webToAgent
 scripts/install-skill.sh
 ```
 
-- 安裝到 `~/.claude/skills/webtoagent`
-- 更新：在 webToAgent 資料夾執行 `git pull`，再重新執行 `scripts/install-skill.sh`
-- 移除：`rm -rf ~/.claude/skills/webtoagent`
+- Installs to `~/.claude/skills/webtoagent`
+- Update: run `git pull` in the webToAgent folder, then run `scripts/install-skill.sh` again
+- Uninstall: `rm -rf ~/.claude/skills/webtoagent`
 
-## 在 Claude Code 中使用
+## Use in Claude Code
 
-依專案類型選擇用法：
+Choose the usage that fits your project:
 
-| 專案 | 輸入 |
+| Project | Command |
 |---|---|
-| 一般 HTML | `/webtoagent <資料夾>` |
-| Vue / React 等有 dev server 的專案 | `/webtoagent`，或 `/webtoagent --proxy <dev server 網址>` |
+| Plain HTML | `/webtoagent <folder>` |
+| Vue / React or other projects with a dev server | `/webtoagent`, or `/webtoagent --proxy <dev server URL>` |
 
-- 不帶參數時，專案有 `dev` 腳本會詢問是否幫你啟動 dev server；沒有就詢問要預覽的資料夾
-- Vue / React 專案不要用 `<資料夾>`：不會編譯 .vue / .jsx，畫面會是空白
-- 可加 `--port 5600` 指定 port，也可以用說的：「啟動 webToAgent 預覽 `<資料夾>`」
+- Without arguments: if the project has a `dev` script, Claude Code asks whether to start the dev server for you; otherwise it asks which folder to preview
+- Don't use `<folder>` for Vue / React projects: .vue / .jsx files aren't compiled, so the page will be blank
+- Add `--port 5600` to choose a port, or just ask in plain words: "Start webToAgent and preview `<folder>`"
 
-- Claude Code 會在背景啟動預覽 server，並給你網址
-- 在瀏覽器圈選元素、寫下需求、確認送出後，Claude Code 會先列出修改清單，等你確認才修改
-- 改完後頁面自動重新整理
-- 需求紀錄存在該專案的 `.webtoagent/`，建議加入 `.gitignore`
-- skill 名稱規定只能用小寫，所以指令是 `/webtoagent`
+- Claude Code starts the preview server in the background and gives you the URL
+- After you pick elements, write requests, and submit them in the browser, Claude Code lists the planned changes first and edits only after you confirm
+- The page reloads automatically after the changes
+- Requests are stored in the project's `.webtoagent/` folder; adding it to `.gitignore` is recommended
+- Skill names must be lowercase, so the command is `/webtoagent`
 
-### Vue / React 專案
+### Vue / React projects
 
-有 dev server 的專案（Vite + Vue / React 等）用 proxy 模式，不用改專案設定：
+Projects with a dev server (Vite + Vue / React, etc.) use proxy mode, with no changes to the project config:
 
-- 已經自己執行 `npm run dev` 時，用 `--proxy` 帶入 dev server 網址 (例：`http://localhost:5173`)
-- 請開 webToAgent 給的網址（預設 `http://127.0.0.1:5600/`），不是 dev server 原本的網址
-- 需求會附上元素所在的元件原始檔（例：`src/components/MyButton.vue`），改完由 dev server 的 HMR 更新畫面
-- Vue 專案裝了 `vite-plugin-vue-devtools` 才有行號，沒裝時啟動會提示，可以讓 Claude Code 幫你加裝
-- 只支援開發模式；React 19 取不到行號，只有檔案與元件名稱
+- If you already ran `npm run dev` yourself, pass the dev server URL with `--proxy` (e.g. `http://localhost:5173`)
+- Open the URL webToAgent gives you (default `http://127.0.0.1:5600/`), not the dev server's own URL
+- Each request includes the component source file of the element (e.g. `src/components/MyButton.vue`); after the change, the dev server's HMR updates the page
+- Vue projects get line numbers only with `vite-plugin-vue-devtools` installed; if it's missing, you'll be prompted at startup and Claude Code can install it for you
+- Development mode only; React 19 doesn't expose line numbers, only the file and component name
 
-## 瀏覽器操作
+## In the browser
 
-| 動作 | 方式 |
+The picker UI is in Traditional Chinese; English meanings are given in parentheses.
+
+| Action | How |
 |------|------|
-| 開關圈選模式 | 右下角「✎ 圈選」按鈕，或 `Alt+Shift+E` |
-| 選取元素 | 圈選模式下點擊元素（外框變虛線即鎖定） |
-| 記住修改 | 輸入框按 `Enter`（`Shift+Enter` 換行），或按「記住修改」；元素標上綠色編號 |
-| 插入顏色 | 輸入框右下角 🎨：有用 Tailwind 會出現色票 (插入 `red-500`)，有用 daisyUI 會出現主題色 (插入 `primary`)，「一般」分頁可自選或吸取畫面顏色 (插入 `#3b82f6`) |
-| 修改 / 刪除已記住的項目 | 再點一次有編號的元素，面板帶出原內容，可「更新修改」或「刪除」 |
-| 送到 CLI | 按右下角「確認送出 (N)」，全部項目一次送出，送出成功後自動退出圈選模式 |
-| 取消 | `Esc` 取消鎖定，再按一次 `Esc` 離開圈選模式 |
+| Toggle pick mode | The "✎ 圈選" (Pick) button at the bottom right, or `Alt+Shift+E` |
+| Select an element | Click an element in pick mode (a dashed outline means it's locked) |
+| Save a request | Press `Enter` in the input box (`Shift+Enter` for a new line), or click "記住修改" (Save); the element gets a green number |
+| Insert a color | Click 🎨 at the bottom right of the input box: Tailwind projects show the palette (inserts `red-500`), daisyUI projects show theme colors (inserts `primary`), and the "一般" (General) tab lets you pick a color or sample one from the screen (inserts `#3b82f6`) |
+| Edit / delete a saved request | Click a numbered element again; the panel shows its request, and you can "更新修改" (Update) or "刪除" (Delete) |
+| Send to the CLI | Click "確認送出 (N)" (Submit) at the bottom right to send all requests at once; pick mode turns off after a successful submit |
+| Cancel | `Esc` unlocks the element; press `Esc` again to leave pick mode |
 
-- 輸入框預設出現在元素下方；下方空間不足時改放上方，捲動時會跟著重新定位，並維持在視窗內
-- 待送清單存在 `sessionStorage`（同一分頁內有效），頁面重新整理或切換頁面都不會遺失，單批上限 50 筆
+- The input box appears below the element by default, or above it when there isn't enough room; it repositions while scrolling and stays inside the viewport
+- The queue is kept in `sessionStorage` (per tab), so it survives reloads and page changes; up to 50 requests per batch
 
-## 安全
+## Security
 
-- 只在本機 `127.0.0.1` 執行，不對外網路開放
-- 只接受預覽頁面本身送出的需求，其他網站無法送出
-- 只能讀取預覽資料夾內的檔案
-- proxy 模式只能轉送到本機（`localhost` / `127.0.0.1`）的 dev server
+- Runs only on local `127.0.0.1`, never exposed to the network
+- Accepts requests only from the preview page itself; other websites can't submit
+- Can read only files inside the preview folder
+- Proxy mode forwards only to a local dev server (`localhost` / `127.0.0.1`)

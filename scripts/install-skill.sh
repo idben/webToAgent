@@ -7,7 +7,7 @@ projectDir="$(cd "$(dirname "$0")/.." && pwd)"
 target="$HOME/.claude/skills/webtoagent"
 makeZip=false
 marker=".webtoagent-skill"
-files=(SKILL.md server.js package.json README.md client)
+files=(SKILL.md server.js package.json README.md README.zh-TW.md client)
 
 for arg in "$@"; do
   case "$arg" in

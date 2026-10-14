@@ -52,6 +52,7 @@ scripts/install-skill.sh
 - 已經自己執行 `npm run dev` 時，用 `--proxy` 帶入 dev server 網址 (例：`http://localhost:5173`)
 - 請開 webToAgent 給的網址（預設 `http://127.0.0.1:5600/`），不是 dev server 原本的網址
 - 需求會附上元素所在的元件原始檔（例：`src/components/MyButton.vue`），改完由 dev server 的 HMR 更新畫面
+- Vue 專案裝了 `vite-plugin-vue-devtools` 才有行號，沒裝時啟動會提示，可以讓 Claude Code 幫你加裝
 - 只支援開發模式；React 19 取不到行號，只有檔案與元件名稱
 
 ## 瀏覽器操作
@@ -62,7 +63,7 @@ scripts/install-skill.sh
 | 選取元素 | 圈選模式下點擊元素（外框變虛線即鎖定） |
 | 記住修改 | 輸入框按 `Enter`（`Shift+Enter` 換行），或按「記住修改」；元素標上綠色編號 |
 | 修改 / 刪除已記住的項目 | 再點一次有編號的元素，面板帶出原內容，可「更新修改」或「刪除」 |
-| 送到 CLI | 按右下角「確認送出 (N)」，全部項目一次送出 |
+| 送到 CLI | 按右下角「確認送出 (N)」，全部項目一次送出，送出成功後自動退出圈選模式 |
 | 取消 | `Esc` 取消鎖定，再按一次 `Esc` 離開圈選模式 |
 
 - 輸入框預設出現在元素下方；下方空間不足時改放上方，捲動時會跟著重新定位，並維持在視窗內

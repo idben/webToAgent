@@ -219,6 +219,7 @@
       state.queue = [];
       writeQueue();
       renderQueue();
+      setActive(false);
       showToast(`已送出 ${count} 筆修改到 CLI（${data.batchId}）`);
     } catch (err) {
       showToast(`送出失敗：${err.message}`, true);

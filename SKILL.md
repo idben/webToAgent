@@ -8,14 +8,16 @@ description: 在瀏覽器預覽 HTML (或 Vue / React 等 dev server 專案) 並
 
 本 skill 所在路徑（下稱 `<skill>`）即為 webToAgent 的安裝資料夾（由原始專案的 scripts/install-skill.sh 產生），`server.js` 與 `client/` 都在這裡。所有指令用 `<skill>/server.js` 組出路徑，不要寫死。
 
+**向使用者提問**：本文件中需要使用者決定的地方 (標 🔸)，用 AskUserQuestion 工具提出選項 (2～4 個，建議的放第一個並標 (Recommended))，不要只在回覆文字中列問題。環境沒有 AskUserQuestion 時 (例：非互動模式)，改用文字提問，但不可略過確認。
+
 ## 啟動
 
 1. **決定模式**（`/webtoagent` 的參數為：`$ARGUMENTS`）：
    - `<資料夾>`：**靜態模式**，預覽資料夾內的 HTML（相對於目前專案根目錄）
    - `--proxy <網址>`：**proxy 模式**，使用者已自己啟動 dev server（Vite 等），網址只能是 `http://localhost:<port>` 或 `http://127.0.0.1:<port>`
    - 沒有參數（或用自然語言觸發且沒指定）：
-     - 專案根目錄的 `package.json` 有 `dev` 腳本（Vue / React 等專案）：**先詢問使用者**是否由你在背景執行 `npm run dev`；同意後用 Bash `run_in_background` 執行 `npm run dev > .webtoagent/dev.log 2>&1`（先 `mkdir -p .webtoagent`），等 log 出現 `Local:` 那行（可能含 ANSI 色碼），取得網址後用 proxy 模式啟動；使用者若已自己開了 dev server，請他提供網址
-     - 沒有 `dev` 腳本：詢問預覽資料夾
+     - 專案根目錄的 `package.json` 有 `dev` 腳本（Vue / React 等專案）：🔸 詢問是否由你在背景執行 `npm run dev` (選項：幫我啟動 (Recommended) / 我已經開了，提供網址)；同意後用 Bash `run_in_background` 執行 `npm run dev > .webtoagent/dev.log 2>&1`（先 `mkdir -p .webtoagent`），等 log 出現 `Local:` 那行（可能含 ANSI 色碼），取得網址後用 proxy 模式啟動；使用者若已自己開了 dev server，請他提供網址
+     - 沒有 `dev` 腳本：🔸 詢問預覽資料夾 (選項：列出專案中含 `.html` 的資料夾，最多 4 個，使用者可選 Other 自行輸入)
    - 資料夾不存在時回報，並列出目前專案中含 `.html` 的資料夾（排除 `node_modules`、`.git`）供選擇
    - port 預設 5600，被占用時 server 會自動往後找；有 `--port` 參數就一併傳給 server
 2. **在目前專案根目錄背景執行**（Bash `run_in_background`，Node 依使用者指定的 nvm 環境）：
@@ -32,7 +34,11 @@ description: 在瀏覽器預覽 HTML (或 Vue / React 等 dev server 專案) 並
    tail -n 0 -f .webtoagent/server.log | grep -E --line-buffered "^\[WTA\]|\[WTA:error\]|Error"
    ```
    Monitor 到期時重新啟動監看，直到使用者說結束。
-5. **檢查 `.gitignore`**：目前專案若是 git repo 且 `.gitignore` 沒有 `.webtoagent/`，詢問是否加入（inbox 含頁面片段與需求內容，不應進版控）。
+5. **檢查 `.gitignore`**：目前專案若是 git repo 且 `.gitignore` 沒有 `.webtoagent/`，🔸 詢問是否加入 (選項：加入 (Recommended) / 不用)（inbox 含頁面片段與需求內容，不應進版控）。
+6. **Vue 專案提示加裝 vite-plugin-vue-devtools**（只在 proxy 模式）：`package.json` 有 `vue` 但沒有 `vite-plugin-vue-devtools` 時，啟動完成後提示一次：
+   - 說明：裝了它，需求才會帶行號；沒有也能用，只會有檔案
+   - 🔸 詢問是否幫忙加裝 (選項：幫我裝 (Recommended) / 不用，之後不要再問)；同意才執行 `npm install -D vite-plugin-vue-devtools`，並在 vite.config 的 `plugins` 加上 `vueDevTools()` (含 import)，改完後重啟 dev server (使用者自己開的就請他重啟)
+   - 使用者拒絕就不再提
 
 ## 使用者在瀏覽器的操作（回答使用者問題時參考）
 
@@ -57,10 +63,10 @@ description: 在瀏覽器預覽 HTML (或 Vue / React 等 dev server 專案) 並
    - 有 `usedIn` 時，先判斷要改的文字或屬性是元件內寫死的，還是父層用 props 傳入的：父層傳入的就改 `usedIn` 指向的檔案，不要改共用元件 (會影響所有使用處)；清單中寫出判斷結果
 2. 列出要修改的內容：
    - **有 plan/task 流程的專案**（根目錄有 `plan.md` / `task.md`，或 CLAUDE.md 有此規範）：
-     - `task.md` 若還有未歸檔的 task，先詢問是否歸檔，歸檔後再開新的 `task.md`
+     - `task.md` 若還有未歸檔的 task，🔸 詢問是否歸檔 (選項：歸檔後開新 task (Recommended) / 接在現有 task 後面)
      - 每筆一個勾選項：檔案（含行號）、元素、需求、預計修改
    - **沒有 plan/task 流程的專案**：在對話中用表格列出同樣內容
-3. **等使用者確認後**才逐筆修改；有 `task.md` 的完成後勾選，實作與規劃不同時註明原因
+3. 🔸 **等使用者確認後**才逐筆修改：清單列完後詢問 (選項：全部修改 (Recommended) / 只改部分，請使用者說明哪幾筆或怎麼調整 / 都不要改，全部標成 skipped)；有 `task.md` 的完成後勾選，實作與規劃不同時註明原因
 4. **回寫 inbox 狀態**：修改完成的標成 `done`，使用者確認時否決的標成 `skipped`（port 取自 `[WTA:ready]` 那一行，`ids` 可一次放多筆）：
    ```bash
    curl -s -H "Origin: http://127.0.0.1:<port>" -d '{"ids":["<id>"],"status":"done"}' http://127.0.0.1:<port>/api/status

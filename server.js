@@ -55,6 +55,7 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/__wta/events') return handleEvents(req, res);
   if (url.pathname === '/__wta/picker.js') return sendFile(res, path.join(appDir, 'client', 'picker.js'));
   if (url.pathname === '/__wta/picker.css') return sendFile(res, path.join(appDir, 'client', 'picker.css'));
+  if (url.pathname === '/__wta/tailwind-colors.js') return sendFile(res, path.join(appDir, 'client', 'tailwind-colors.js'));
   if (proxyTarget) return proxyRequest(req, res);
   if (req.method !== 'GET' && req.method !== 'HEAD') return sendText(res, 405, 'Method Not Allowed');
 

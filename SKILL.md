@@ -44,6 +44,7 @@ description: 在瀏覽器預覽 HTML (或 Vue / React 等 dev server 專案) 並
 
 - 右下角「✎ 圈選」或 `Alt+Shift+E` 開關圈選模式
 - 點元素 → 輸入需求 → 「記住修改」（可多筆，元素標綠色編號；再點可更新或刪除）
+- 輸入框的 🎨 可插入顏色名稱：Tailwind 色票 (`red-500`)、daisyUI 主題色 (`primary`)、專案自訂色 (`brand`)、一般色碼 (`#3b82f6`)
 - 「確認送出 (N)」一次送出整批
 
 ## 收到批次需求
@@ -74,6 +75,8 @@ description: 在瀏覽器預覽 HTML (或 Vue / React 等 dev server 專案) 並
    - 回應的 `notFound` 不是空陣列時，回報對不到的 id
    - inbox 只由 server 寫入，server 執行中不要直接改 `inbox.jsonl`；server 已停止時才可直接修改該行的 `status`
 5. 修改後不需請使用者手動重整：靜態模式由 server 透過 SSE 自動重新整理；proxy 模式由 dev server 的 HMR 更新畫面
+
+需求中的顏色名稱依專案用的框架轉成對應寫法：`red-500`、`primary` 依需求套到 `bg-` / `text-` / `border-` 等 class；色碼 (`#3b82f6`) 在 Tailwind 專案用最接近的色票或任意值 (`bg-[#3b82f6]`)，清單中寫出採用的寫法。
 
 需求描述模糊時（例：「改成好好的描述」），在清單中寫出你的理解，讓使用者確認時一併修正。
 

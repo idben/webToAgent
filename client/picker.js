@@ -11,6 +11,19 @@
   // proxy 模式 (Vue / React dev server) 畫面更新交給 HMR，不連 SSE 自動重新整理
   const proxyMode = document.currentScript?.dataset.wtaMode === 'proxy';
   const state = { active: false, locked: null, editIndex: -1, hovered: null, rafId: 0, queue: readQueue() };
+  // 檢色器：sources 為偵測結果 (第一次開啟時才偵測)，tab 為目前分頁
+  const colorState = { sources: null, tab: '', twLoad: null };
+  const daisyGroups = [
+    ['primary', 'primary-content'],
+    ['secondary', 'secondary-content'],
+    ['accent', 'accent-content'],
+    ['neutral', 'neutral-content'],
+    ['base-100', 'base-200', 'base-300', 'base-content'],
+    ['info', 'info-content'],
+    ['success', 'success-content'],
+    ['warning', 'warning-content'],
+    ['error', 'error-content']
+  ];
 
   injectStyle();
   const ui = buildUi();
@@ -39,7 +52,15 @@
           <span class="wta-target"></span>
           <button type="button" class="wta-close" aria-label="取消">×</button>
         </div>
-        <textarea class="wta-input" rows="3" placeholder="想怎麼改？例：字體放大、改成主色（Enter 記住，Shift+Enter 換行）"></textarea>
+        <div class="wta-input-wrap">
+          <textarea class="wta-input" rows="3" placeholder="想怎麼改？例：字體放大、改成主色（Enter 記住，Shift+Enter 換行）"></textarea>
+          <button type="button" class="wta-color-btn" title="顏色" aria-label="顏色" aria-expanded="false">🎨</button>
+        </div>
+        <div class="wta-colors" hidden>
+          <div class="wta-color-tabs" role="tablist"></div>
+          <div class="wta-color-body"></div>
+          <div class="wta-color-hint">點色塊插入顏色名稱</div>
+        </div>
         <div class="wta-actions">
           <button type="button" class="wta-btn wta-btn-danger wta-remove" hidden>刪除</button>
           <button type="button" class="wta-btn wta-btn-ghost wta-cancel">取消</button>
@@ -61,6 +82,11 @@
       panel: root.querySelector('.wta-panel'),
       target: root.querySelector('.wta-target'),
       input: root.querySelector('.wta-input'),
+      colorBtn: root.querySelector('.wta-color-btn'),
+      colors: root.querySelector('.wta-colors'),
+      colorTabs: root.querySelector('.wta-color-tabs'),
+      colorBody: root.querySelector('.wta-color-body'),
+      colorHint: root.querySelector('.wta-color-hint'),
       remove: root.querySelector('.wta-remove'),
       save: root.querySelector('.wta-save'),
       toggle: root.querySelector('.wta-toggle'),
@@ -75,6 +101,19 @@
     ui.root.querySelector('.wta-close').addEventListener('click', unlock);
     ui.root.querySelector('.wta-cancel').addEventListener('click', unlock);
     ui.remove.addEventListener('click', removeItem);
+    ui.colorBtn.addEventListener('click', toggleColors);
+    ui.colorTabs.addEventListener('click', (e) => {
+      const tab = e.target.closest('[data-tab]');
+      if (tab) renderColorTab(tab.dataset.tab);
+    });
+    ui.colorBody.addEventListener('click', (e) => {
+      const swatch = e.target.closest('[data-color]');
+      if (swatch) insertColor(swatch.dataset.color);
+    });
+    ui.colorBody.addEventListener('mouseover', (e) => {
+      const swatch = e.target.closest('[data-color]');
+      if (swatch) ui.colorHint.textContent = `${swatch.dataset.color}  ${swatch.dataset.value}`;
+    });
     ui.panel.addEventListener('submit', (e) => {
       e.preventDefault();
       saveItem();
@@ -122,7 +161,8 @@
       return;
     }
     if (e.key !== 'Escape' || !state.active) return;
-    if (state.locked) unlock();
+    if (!ui.colors.hidden) closeColors();
+    else if (state.locked) unlock();
     else setActive(false);
   }
 
@@ -150,6 +190,7 @@
     ui.save.textContent = editing ? '更新修改' : '記住修改';
     ui.remove.hidden = !editing;
     ui.panel.hidden = false;
+    closeColors();
     drawBox(el);
     positionPanel();
     ui.input.focus();
@@ -158,6 +199,7 @@
   function unlock() {
     state.locked = null;
     state.editIndex = -1;
+    closeColors();
     ui.panel.hidden = true;
     ui.box.classList.remove('wta-locked');
     ui.box.hidden = true;
@@ -306,6 +348,200 @@
     const left = Math.min(Math.max(rect.left, gap), Math.max(vw - panelW - gap, gap));
     ui.panel.style.top = `${top}px`;
     ui.panel.style.left = `${left}px`;
+  }
+
+  // ---------- 檢色器 ----------
+
+  async function toggleColors() {
+    if (!ui.colors.hidden) {
+      closeColors();
+      ui.input.focus();
+      return;
+    }
+    colorState.sources ||= detectColorSources();
+    const { tailwind, daisy } = colorState.sources;
+    const tabs = [tailwind && ['tailwind', 'Tailwind'], daisy && ['daisy', 'daisyUI'], ['general', '一般']].filter(Boolean);
+    ui.colorTabs.innerHTML = tabs
+      .map(([key, name]) => `<button type="button" role="tab" class="wta-color-tab" data-tab="${key}">${name}</button>`)
+      .join('');
+    ui.colors.hidden = false;
+    ui.colorBtn.setAttribute('aria-expanded', 'true');
+    const keys = tabs.map(([key]) => key);
+    await renderColorTab(keys.includes(colorState.tab) ? colorState.tab : keys[0]);
+  }
+
+  function closeColors() {
+    ui.colors.hidden = true;
+    ui.colorBtn.setAttribute('aria-expanded', 'false');
+    if (state.locked) positionPanel();
+  }
+
+  async function renderColorTab(tab) {
+    colorState.tab = tab;
+    ui.colorTabs.querySelectorAll('[data-tab]').forEach((btn) => {
+      btn.setAttribute('aria-selected', String(btn.dataset.tab === tab));
+    });
+    ui.colorHint.textContent = '點色塊插入顏色名稱';
+    if (tab === 'tailwind') {
+      ui.colorBody.innerHTML = '<div class="wta-color-loading">載入色票…</div>';
+      try {
+        await loadTailwindColors();
+      } catch {
+        ui.colorBody.innerHTML = '<div class="wta-color-loading">色票載入失敗</div>';
+        return;
+      }
+      if (colorState.tab !== tab) return;
+      ui.colorBody.innerHTML = tailwindHtml();
+    } else if (tab === 'daisy') {
+      ui.colorBody.innerHTML = daisyHtml();
+    } else {
+      renderGeneral();
+    }
+    if (state.locked) positionPanel();
+  }
+
+  function tailwindHtml() {
+    const { steps, v4Only, palettes } = window.__wtaTailwindColors;
+    const { tailwind, custom } = colorState.sources;
+    const names = Object.keys(palettes).filter((name) => tailwind >= 4 || !v4Only.includes(name));
+    const customHtml = custom.length
+      ? `<div class="wta-color-section">專案色</div><div class="wta-chips">${custom.map(([name, value]) => chipHtml(name, value)).join('')}</div>`
+      : '';
+    const head = `<span></span>${steps.map((step) => `<span class="wta-step">${step}</span>`).join('')}`;
+    const rows = names
+      .map((name) => {
+        const cells = palettes[name].map((value, i) => swatchHtml(`${name}-${steps[i]}`, value)).join('');
+        return `<span class="wta-palette">${name}</span>${cells}`;
+      })
+      .join('');
+    const mono = `<div class="wta-chips">${chipHtml('black', '#000')}${chipHtml('white', '#fff')}</div>`;
+    return `${customHtml}<div class="wta-color-section">預設色票</div><div class="wta-tw-grid">${head}${rows}</div>${mono}`;
+  }
+
+  function daisyHtml() {
+    const cs = getComputedStyle(document.documentElement);
+    return daisyGroups
+      .map((group) => {
+        const chips = group.map((name) => chipHtml(name, cs.getPropertyValue(`--color-${name}`).trim())).join('');
+        return `<div class="wta-chips">${chips}</div>`;
+      })
+      .join('');
+  }
+
+  function renderGeneral() {
+    const initial = toHex(state.locked ? getComputedStyle(state.locked).color : '#000') || '#000000';
+    ui.colorBody.innerHTML = `
+      <div class="wta-general">
+        <input type="color" class="wta-color-input" value="${initial}" aria-label="選擇顏色">
+        <code class="wta-color-hex">${initial}</code>
+        <button type="button" class="wta-btn wta-btn-ghost wta-eyedrop" ${'EyeDropper' in window ? '' : 'hidden'}>吸色</button>
+        <button type="button" class="wta-btn wta-btn-primary wta-color-insert">插入</button>
+      </div>`;
+    const input = ui.colorBody.querySelector('.wta-color-input');
+    const hex = ui.colorBody.querySelector('.wta-color-hex');
+    input.addEventListener('input', () => {
+      hex.textContent = input.value;
+    });
+    ui.colorBody.querySelector('.wta-color-insert').addEventListener('click', () => insertColor(input.value));
+    ui.colorBody.querySelector('.wta-eyedrop').addEventListener('click', async () => {
+      try {
+        const { sRGBHex } = await new window.EyeDropper().open();
+        input.value = toHex(sRGBHex) || input.value;
+        hex.textContent = input.value;
+      } catch {
+        // 使用者按 Esc 取消吸色
+      }
+    });
+    ui.colorHint.textContent = '選好顏色後按「插入」';
+  }
+
+  function swatchHtml(name, value) {
+    return `<button type="button" class="wta-swatch" style="background:${value}" data-color="${name}" data-value="${value}" title="${name}" aria-label="${name}"></button>`;
+  }
+
+  function chipHtml(name, value) {
+    return `<button type="button" class="wta-chip" data-color="${name}" data-value="${value}" title="${name}"><span class="wta-chip-dot" style="background:${value}"></span>${name}</button>`;
+  }
+
+  // 在游標位置插入顏色名稱 (前後緊接英數字時補空白)，關閉色票區後回到輸入框
+  function insertColor(text) {
+    const input = ui.input;
+    const { selectionStart: start, selectionEnd: end, value } = input;
+    const before = /[\w#)]$/.test(value.slice(0, start)) ? ' ' : '';
+    const after = /^[\w#(]/.test(value.slice(end)) ? ' ' : '';
+    input.setRangeText(before + text + after, start, end, 'end');
+    closeColors();
+    input.focus();
+  }
+
+  function loadTailwindColors() {
+    if (window.__wtaTailwindColors) return Promise.resolve();
+    colorState.twLoad ||= new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = '/__wta/tailwind-colors.js';
+      script.onload = resolve;
+      script.onerror = () => {
+        colorState.twLoad = null;
+        reject(new Error('load failed'));
+      };
+      document.head.append(script);
+    });
+    return colorState.twLoad;
+  }
+
+  // 從頁面樣式判斷是否使用 Tailwind (與版本)、daisyUI，並收集專案自訂的 --color-* 變數
+  function detectColorSources() {
+    let tailwind = 0;
+    for (const style of document.querySelectorAll('style')) {
+      const match = style.textContent.match(/tailwindcss v(\d+)/);
+      if (match) {
+        tailwind = Number(match[1]);
+        break;
+      }
+    }
+    let hasTwVars = false;
+    let hasThemeLayer = false;
+    const colorVars = new Set();
+    const walk = (rules) => {
+      for (const rule of rules) {
+        if (rule.name?.startsWith('--tw-')) hasTwVars = true;
+        if (rule.name === 'theme' || rule.nameList?.includes('theme')) hasThemeLayer = true;
+        if (rule.style) {
+          for (const prop of rule.style) {
+            if (prop.startsWith('--tw-')) hasTwVars = true;
+            else if (prop.startsWith('--color-')) colorVars.add(prop);
+          }
+        }
+        if (rule.cssRules) walk(rule.cssRules);
+      }
+    };
+    for (const sheet of document.styleSheets) {
+      try {
+        walk(sheet.cssRules);
+      } catch {
+        // 跨網域樣式表無法讀取規則
+      }
+    }
+    if (!tailwind && hasTwVars) tailwind = hasThemeLayer ? 4 : 3;
+    const cs = getComputedStyle(document.documentElement);
+    const daisy = Boolean(cs.getPropertyValue('--color-base-100').trim() && cs.getPropertyValue('--color-primary-content').trim());
+    const daisyNames = new Set(daisyGroups.flat());
+    const defaultName = /^(black|white|(red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|slate|gray|zinc|neutral|stone|mauve|olive|mist|taupe)-\d+)$/;
+    const custom = [...colorVars]
+      .map((prop) => [prop.slice('--color-'.length), cs.getPropertyValue(prop).trim()])
+      .filter(([name, value]) => value && CSS.supports('color', value) && !defaultName.test(name) && !(daisy && daisyNames.has(name)))
+      .sort(([a], [b]) => a.localeCompare(b));
+    return { tailwind, daisy, custom };
+  }
+
+  // 任何 CSS 顏色 (含 oklch) 轉成 #rrggbb，交給 canvas 換算
+  function toHex(color) {
+    const ctx = document.createElement('canvas').getContext('2d');
+    ctx.fillStyle = '#000';
+    ctx.fillStyle = color;
+    ctx.fillRect(0, 0, 1, 1);
+    const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
+    return `#${[r, g, b].map((n) => n.toString(16).padStart(2, '0')).join('')}`;
   }
 
   function pickComputed(el) {

@@ -4,6 +4,7 @@
   window.__wtaLoaded = true;
 
   const activeKey = 'wta-active';
+  const langKey = 'wta-lang';
   const queueKey = 'wta-queue';
   const maxItems = 50;
   const gap = 8;
@@ -13,6 +14,71 @@
   const state = { active: false, locked: null, editIndex: -1, hovered: null, rafId: 0, queue: readQueue() };
   // 檢色器：sources 為偵測結果 (第一次開啟時才偵測)，tab 為目前分頁
   const colorState = { sources: null, tab: '', twLoad: null };
+  const messages = {
+    'zh-TW': {
+      close: '取消',
+      placeholder: '想怎麼改？例：字體放大、改成主色（Enter 記住，Shift+Enter 換行）',
+      color: '顏色',
+      colorHint: '點色塊插入顏色名稱',
+      generalHint: '選好顏色後按「插入」',
+      remove: '刪除',
+      cancel: '取消',
+      save: '記住修改',
+      update: '更新修改',
+      toggleTitle: '圈選模式（Alt+Shift+E）',
+      toggleOff: '✎ 圈選',
+      toggleOn: '✎ 圈選中',
+      submit: '確認送出 ({count})',
+      langTitle: 'Switch to English',
+      langLabel: 'EN',
+      tabGeneral: '一般',
+      loading: '載入色票…',
+      loadFailed: '色票載入失敗',
+      projectColors: '專案色',
+      defaultPalette: '預設色票',
+      pickColor: '選擇顏色',
+      eyedropper: '吸色',
+      insert: '插入',
+      savedToast: '已記住第 {no} 筆修改',
+      updatedToast: '已更新第 {no} 筆修改',
+      removedToast: '已刪除第 {no} 筆修改',
+      maxToast: '最多記住 {max} 筆，請先確認送出',
+      sentToast: '已送出 {count} 筆修改到 CLI（{batchId}）',
+      failedToast: '送出失敗：{error}'
+    },
+    en: {
+      close: 'Cancel',
+      placeholder: 'What should change? e.g. larger font, use the primary color (Enter to save, Shift+Enter for a new line)',
+      color: 'Color',
+      colorHint: 'Click a swatch to insert its name',
+      generalHint: 'Pick a color, then click Insert',
+      remove: 'Delete',
+      cancel: 'Cancel',
+      save: 'Save',
+      update: 'Update',
+      toggleTitle: 'Pick mode (Alt+Shift+E)',
+      toggleOff: '✎ Pick',
+      toggleOn: '✎ Picking',
+      submit: 'Submit ({count})',
+      langTitle: '切換為中文',
+      langLabel: '中',
+      tabGeneral: 'General',
+      loading: 'Loading palette…',
+      loadFailed: 'Failed to load the palette',
+      projectColors: 'Project colors',
+      defaultPalette: 'Default palette',
+      pickColor: 'Pick a color',
+      eyedropper: 'Eyedropper',
+      insert: 'Insert',
+      savedToast: 'Saved request #{no}',
+      updatedToast: 'Updated request #{no}',
+      removedToast: 'Deleted request #{no}',
+      maxToast: 'Up to {max} requests. Please submit first',
+      sentToast: 'Sent {count} request{s} to the CLI ({batchId})',
+      failedToast: 'Submit failed: {error}'
+    }
+  };
+  let lang = readLang();
   const daisyGroups = [
     ['primary', 'primary-content'],
     ['secondary', 'secondary-content'],
@@ -28,11 +94,62 @@
   injectStyle();
   const ui = buildUi();
   bindEvents();
+  applyLang();
   if (!proxyMode) connectReload();
   if (readActive()) setActive(true);
-  renderQueue();
 
   // ---------- functions ----------
+
+  // ---------- 語言 ----------
+
+  function t(key, vars = {}) {
+    const text = messages[lang][key] ?? messages['zh-TW'][key];
+    return text.replace(/\{(\w+)\}/g, (_, name) => vars[name] ?? '');
+  }
+
+  // 套用目前語言到所有固定文字與動態文字 (圈選按鈕、送出數量、面板、檢色器)
+  function applyLang() {
+    ui.root.lang = lang;
+    ui.root.querySelectorAll('[data-i18n]').forEach((el) => {
+      el.textContent = t(el.dataset.i18n);
+    });
+    ui.root.querySelectorAll('[data-i18n-title]').forEach((el) => {
+      el.title = t(el.dataset.i18nTitle);
+    });
+    ui.root.querySelectorAll('[data-i18n-aria]').forEach((el) => {
+      el.setAttribute('aria-label', t(el.dataset.i18nAria));
+    });
+    ui.root.querySelectorAll('[data-i18n-placeholder]').forEach((el) => {
+      el.placeholder = t(el.dataset.i18nPlaceholder);
+    });
+    ui.toggle.textContent = t(state.active ? 'toggleOn' : 'toggleOff');
+    ui.save.textContent = t(state.editIndex >= 0 ? 'update' : 'save');
+    ui.colorHint.textContent = t('colorHint');
+    renderQueue();
+    if (!ui.colors.hidden) {
+      renderColorTabs();
+      renderColorTab(colorState.tab);
+    }
+  }
+
+  // 使用者切換過就用記住的語言，否則依瀏覽器語言 (zh 開頭用中文，其他用英文)
+  function readLang() {
+    try {
+      const saved = localStorage.getItem(langKey);
+      if (saved && saved in messages) return saved;
+    } catch {
+      // 無法存取 localStorage 時改依瀏覽器語言
+    }
+    return navigator.language?.toLowerCase().startsWith('zh') ? 'zh-TW' : 'en';
+  }
+
+  function writeLang() {
+    try {
+      localStorage.setItem(langKey, lang);
+    } catch {
+      // 無法存取 localStorage 時只在本頁生效
+    }
+  }
 
   function injectStyle() {
     const link = document.createElement('link');
@@ -50,26 +167,27 @@
       <form class="wta-panel" hidden>
         <div class="wta-panel-head">
           <span class="wta-target"></span>
-          <button type="button" class="wta-close" aria-label="取消">×</button>
+          <button type="button" class="wta-close" data-i18n-aria="close">×</button>
         </div>
         <div class="wta-input-wrap">
-          <textarea class="wta-input" rows="3" placeholder="想怎麼改？例：字體放大、改成主色（Enter 記住，Shift+Enter 換行）"></textarea>
-          <button type="button" class="wta-color-btn" title="顏色" aria-label="顏色" aria-expanded="false">🎨</button>
+          <textarea class="wta-input" rows="3" data-i18n-placeholder="placeholder"></textarea>
+          <button type="button" class="wta-color-btn" data-i18n-title="color" data-i18n-aria="color" aria-expanded="false">🎨</button>
         </div>
         <div class="wta-colors" hidden>
           <div class="wta-color-tabs" role="tablist"></div>
           <div class="wta-color-body"></div>
-          <div class="wta-color-hint">點色塊插入顏色名稱</div>
+          <div class="wta-color-hint"></div>
         </div>
         <div class="wta-actions">
-          <button type="button" class="wta-btn wta-btn-danger wta-remove" hidden>刪除</button>
-          <button type="button" class="wta-btn wta-btn-ghost wta-cancel">取消</button>
-          <button type="submit" class="wta-btn wta-btn-primary wta-save">記住修改</button>
+          <button type="button" class="wta-btn wta-btn-danger wta-remove" data-i18n="remove" hidden></button>
+          <button type="button" class="wta-btn wta-btn-ghost wta-cancel" data-i18n="cancel"></button>
+          <button type="submit" class="wta-btn wta-btn-primary wta-save"></button>
         </div>
       </form>
       <div class="wta-dock">
-        <button type="button" class="wta-toggle" title="圈選模式（Alt+Shift+E）">✎ 圈選</button>
-        <button type="button" class="wta-submit" hidden>確認送出</button>
+        <button type="button" class="wta-lang" data-i18n="langLabel" data-i18n-title="langTitle"></button>
+        <button type="button" class="wta-toggle" data-i18n-title="toggleTitle"></button>
+        <button type="button" class="wta-submit" hidden></button>
       </div>
       <div class="wta-toast" hidden></div>
     `;
@@ -91,12 +209,18 @@
       save: root.querySelector('.wta-save'),
       toggle: root.querySelector('.wta-toggle'),
       submit: root.querySelector('.wta-submit'),
+      lang: root.querySelector('.wta-lang'),
       toast: root.querySelector('.wta-toast')
     };
   }
 
   function bindEvents() {
     ui.toggle.addEventListener('click', () => setActive(!state.active));
+    ui.lang.addEventListener('click', () => {
+      lang = lang === 'en' ? 'zh-TW' : 'en';
+      writeLang();
+      applyLang();
+    });
     ui.submit.addEventListener('click', submitQueue);
     ui.root.querySelector('.wta-close').addEventListener('click', unlock);
     ui.root.querySelector('.wta-cancel').addEventListener('click', unlock);
@@ -169,7 +293,7 @@
   function setActive(on) {
     state.active = on;
     ui.toggle.classList.toggle('wta-on', on);
-    ui.toggle.textContent = on ? '✎ 圈選中' : '✎ 圈選';
+    ui.toggle.textContent = t(on ? 'toggleOn' : 'toggleOff');
     document.documentElement.classList.toggle('wta-picking', on);
     writeActive(on);
     if (!on) {
@@ -187,7 +311,7 @@
     ui.box.classList.add('wta-locked');
     ui.target.textContent = editing ? `#${state.editIndex + 1} ${describe(el)}` : describe(el);
     ui.input.value = editing ? state.queue[state.editIndex].instruction : '';
-    ui.save.textContent = editing ? '更新修改' : '記住修改';
+    ui.save.textContent = t(editing ? 'update' : 'save');
     ui.remove.hidden = !editing;
     ui.panel.hidden = false;
     closeColors();
@@ -211,10 +335,10 @@
     const el = state.locked;
     if (state.editIndex >= 0) {
       state.queue[state.editIndex].instruction = instruction;
-      showToast(`已更新第 ${state.editIndex + 1} 筆修改`);
+      showToast(t('updatedToast', { no: state.editIndex + 1 }));
     } else {
       if (state.queue.length >= maxItems) {
-        showToast(`最多記住 ${maxItems} 筆，請先確認送出`, true);
+        showToast(t('maxToast', { max: maxItems }), true);
         return;
       }
       state.queue.push({
@@ -227,7 +351,7 @@
         source: detectSource(el),
         instruction
       });
-      showToast(`已記住第 ${state.queue.length} 筆修改`);
+      showToast(t('savedToast', { no: state.queue.length }));
     }
     writeQueue();
     unlock();
@@ -241,7 +365,7 @@
     writeQueue();
     unlock();
     renderQueue();
-    showToast(`已刪除第 ${no} 筆修改`);
+    showToast(t('removedToast', { no }));
   }
 
   async function submitQueue() {
@@ -262,9 +386,9 @@
       writeQueue();
       renderQueue();
       setActive(false);
-      showToast(`已送出 ${count} 筆修改到 CLI（${data.batchId}）`);
+      showToast(t('sentToast', { count, batchId: data.batchId, s: count === 1 ? '' : 's' }));
     } catch (err) {
-      showToast(`送出失敗：${err.message}`, true);
+      showToast(t('failedToast', { error: err.message }), true);
     } finally {
       ui.submit.disabled = false;
     }
@@ -274,7 +398,7 @@
   function renderQueue() {
     const count = state.queue.length;
     ui.submit.hidden = count === 0;
-    ui.submit.textContent = `確認送出 (${count})`;
+    ui.submit.textContent = t('submit', { count });
     ui.marks.replaceChildren();
     state.queue.forEach((item, i) => {
       if (item.page !== location.pathname) return;
@@ -359,15 +483,20 @@
       return;
     }
     colorState.sources ||= detectColorSources();
+    ui.colors.hidden = false;
+    ui.colorBtn.setAttribute('aria-expanded', 'true');
+    const keys = renderColorTabs();
+    await renderColorTab(keys.includes(colorState.tab) ? colorState.tab : keys[0]);
+  }
+
+  // 依偵測結果產生分頁按鈕，回傳分頁 key
+  function renderColorTabs() {
     const { tailwind, daisy } = colorState.sources;
-    const tabs = [tailwind && ['tailwind', 'Tailwind'], daisy && ['daisy', 'daisyUI'], ['general', '一般']].filter(Boolean);
+    const tabs = [tailwind && ['tailwind', 'Tailwind'], daisy && ['daisy', 'daisyUI'], ['general', t('tabGeneral')]].filter(Boolean);
     ui.colorTabs.innerHTML = tabs
       .map(([key, name]) => `<button type="button" role="tab" class="wta-color-tab" data-tab="${key}">${name}</button>`)
       .join('');
-    ui.colors.hidden = false;
-    ui.colorBtn.setAttribute('aria-expanded', 'true');
-    const keys = tabs.map(([key]) => key);
-    await renderColorTab(keys.includes(colorState.tab) ? colorState.tab : keys[0]);
+    return tabs.map(([key]) => key);
   }
 
   function closeColors() {
@@ -381,13 +510,13 @@
     ui.colorTabs.querySelectorAll('[data-tab]').forEach((btn) => {
       btn.setAttribute('aria-selected', String(btn.dataset.tab === tab));
     });
-    ui.colorHint.textContent = '點色塊插入顏色名稱';
+    ui.colorHint.textContent = t('colorHint');
     if (tab === 'tailwind') {
-      ui.colorBody.innerHTML = '<div class="wta-color-loading">載入色票…</div>';
+      ui.colorBody.innerHTML = `<div class="wta-color-loading">${t('loading')}</div>`;
       try {
         await loadTailwindColors();
       } catch {
-        ui.colorBody.innerHTML = '<div class="wta-color-loading">色票載入失敗</div>';
+        ui.colorBody.innerHTML = `<div class="wta-color-loading">${t('loadFailed')}</div>`;
         return;
       }
       if (colorState.tab !== tab) return;
@@ -405,7 +534,7 @@
     const { tailwind, custom } = colorState.sources;
     const names = Object.keys(palettes).filter((name) => tailwind >= 4 || !v4Only.includes(name));
     const customHtml = custom.length
-      ? `<div class="wta-color-section">專案色</div><div class="wta-chips">${custom.map(([name, value]) => chipHtml(name, value)).join('')}</div>`
+      ? `<div class="wta-color-section">${t('projectColors')}</div><div class="wta-chips">${custom.map(([name, value]) => chipHtml(name, value)).join('')}</div>`
       : '';
     const head = `<span></span>${steps.map((step) => `<span class="wta-step">${step}</span>`).join('')}`;
     const rows = names
@@ -415,7 +544,7 @@
       })
       .join('');
     const mono = `<div class="wta-chips">${chipHtml('black', '#000')}${chipHtml('white', '#fff')}</div>`;
-    return `${customHtml}<div class="wta-color-section">預設色票</div><div class="wta-tw-grid">${head}${rows}</div>${mono}`;
+    return `${customHtml}<div class="wta-color-section">${t('defaultPalette')}</div><div class="wta-tw-grid">${head}${rows}</div>${mono}`;
   }
 
   function daisyHtml() {
@@ -432,10 +561,10 @@
     const initial = toHex(state.locked ? getComputedStyle(state.locked).color : '#000') || '#000000';
     ui.colorBody.innerHTML = `
       <div class="wta-general">
-        <input type="color" class="wta-color-input" value="${initial}" aria-label="選擇顏色">
+        <input type="color" class="wta-color-input" value="${initial}" aria-label="${t('pickColor')}">
         <code class="wta-color-hex">${initial}</code>
-        <button type="button" class="wta-btn wta-btn-ghost wta-eyedrop" ${'EyeDropper' in window ? '' : 'hidden'}>吸色</button>
-        <button type="button" class="wta-btn wta-btn-primary wta-color-insert">插入</button>
+        <button type="button" class="wta-btn wta-btn-ghost wta-eyedrop" ${'EyeDropper' in window ? '' : 'hidden'}>${t('eyedropper')}</button>
+        <button type="button" class="wta-btn wta-btn-primary wta-color-insert">${t('insert')}</button>
       </div>`;
     const input = ui.colorBody.querySelector('.wta-color-input');
     const hex = ui.colorBody.querySelector('.wta-color-hex');
@@ -452,7 +581,7 @@
         // 使用者按 Esc 取消吸色
       }
     });
-    ui.colorHint.textContent = '選好顏色後按「插入」';
+    ui.colorHint.textContent = t('generalHint');
   }
 
   function swatchHtml(name, value) {

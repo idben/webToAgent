@@ -114,7 +114,7 @@ function parseProxyTarget(value) {
 
 // 一般 HTTP 請求轉送到 dev server；text/html 回應插入圈選工具，其他原樣回傳
 function proxyRequest(req, res) {
-  if (req.headers[loopHeader]) return sendText(res, 508, 'Loop Detected：--proxy 指向了 webToAgent 自己');
+  if (req.headers[loopHeader]) return sendText(res, 508, 'Loop Detected：--proxy 指向了 webToAgent 自己\n--proxy points to webToAgent itself');
   const headers = { ...req.headers, host: proxyTarget.host, [loopHeader]: '1' };
   // 不接受壓縮，HTML 才能直接插入
   delete headers['accept-encoding'];
@@ -147,7 +147,7 @@ function proxyRequest(req, res) {
   });
   proxyReq.on('error', (err) => {
     if (res.headersSent) return res.destroy();
-    sendText(res, 502, `Bad Gateway：無法連到 dev server ${proxyTarget.origin} (${err.code || err.message})`);
+    sendText(res, 502, `Bad Gateway：無法連到 dev server ${proxyTarget.origin} (${err.code || err.message})\nCannot reach the dev server ${proxyTarget.origin}`);
   });
   req.pipe(proxyReq);
 }

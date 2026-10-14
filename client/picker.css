@@ -180,6 +180,25 @@
   gap: 8px;
 }
 
+.wta-lang {
+  min-width: 38px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--wta-muted);
+  background: var(--wta-bg);
+  border: 1px solid var(--wta-border);
+  border-radius: 999px;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.15);
+  cursor: pointer;
+}
+
+.wta-lang:hover {
+  color: var(--wta-primary);
+  border-color: var(--wta-primary);
+}
+
 .wta-toggle,
 .wta-submit {
   padding: 8px 14px;

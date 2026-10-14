@@ -59,18 +59,18 @@ Projects with a dev server (Vite + Vue / React, etc.) use proxy mode, with no ch
 
 ## In the browser
 
-The picker UI is in Traditional Chinese; English meanings are given in parentheses.
-
 | Action | How |
 |------|------|
-| Toggle pick mode | The "✎ 圈選" (Pick) button at the bottom right, or `Alt+Shift+E` |
+| Toggle pick mode | The "✎ Pick" button at the bottom right, or `Alt+Shift+E` |
 | Select an element | Click an element in pick mode (a dashed outline means it's locked) |
-| Save a request | Press `Enter` in the input box (`Shift+Enter` for a new line), or click "記住修改" (Save); the element gets a green number |
-| Insert a color | Click 🎨 at the bottom right of the input box: Tailwind projects show the palette (inserts `red-500`), daisyUI projects show theme colors (inserts `primary`), and the "一般" (General) tab lets you pick a color or sample one from the screen (inserts `#3b82f6`) |
-| Edit / delete a saved request | Click a numbered element again; the panel shows its request, and you can "更新修改" (Update) or "刪除" (Delete) |
-| Send to the CLI | Click "確認送出 (N)" (Submit) at the bottom right to send all requests at once; pick mode turns off after a successful submit |
+| Save a request | Press `Enter` in the input box (`Shift+Enter` for a new line), or click "Save"; the element gets a green number |
+| Insert a color | Click 🎨 at the bottom right of the input box: Tailwind projects show the palette (inserts `red-500`), daisyUI projects show theme colors (inserts `primary`), and the "General" tab lets you pick a color or sample one from the screen (inserts `#3b82f6`) |
+| Edit / delete a saved request | Click a numbered element again; the panel shows its request, and you can "Update" or "Delete" it |
+| Send to the CLI | Click "Submit (N)" at the bottom right to send all requests at once; pick mode turns off after a successful submit |
 | Cancel | `Esc` unlocks the element; press `Esc` again to leave pick mode |
+| Switch language | The "中" / "EN" button at the bottom right switches between Traditional Chinese and English |
 
+- The UI language follows your browser (Chinese browsers get Traditional Chinese, others get English); once you switch, your choice is remembered
 - The input box appears below the element by default, or above it when there isn't enough room; it repositions while scrolling and stays inside the viewport
 - The queue is kept in `sessionStorage` (per tab), so it survives reloads and page changes; up to 50 requests per batch
 

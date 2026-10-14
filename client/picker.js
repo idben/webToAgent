@@ -8,12 +8,14 @@
   const maxItems = 50;
   const gap = 8;
   const labelH = 22;
+  // proxy 模式 (Vue / React dev server) 畫面更新交給 HMR，不連 SSE 自動重新整理
+  const proxyMode = document.currentScript?.dataset.wtaMode === 'proxy';
   const state = { active: false, locked: null, editIndex: -1, hovered: null, rafId: 0, queue: readQueue() };
 
   injectStyle();
   const ui = buildUi();
   bindEvents();
-  connectReload();
+  if (!proxyMode) connectReload();
   if (readActive()) setActive(true);
   renderQueue();
 
@@ -180,6 +182,7 @@
         outerHTML: el.outerHTML.slice(0, 2000),
         text: (el.textContent || '').trim().slice(0, 300),
         computed: pickComputed(el),
+        source: detectSource(el),
         instruction
       });
       showToast(`已記住第 ${state.queue.length} 筆修改`);
@@ -330,6 +333,116 @@
       node = parent;
     }
     return parts.join(' > ');
+  }
+
+  // 找出元素屬於哪個元件原始檔 (只在開發模式有效)，找不到回傳 null
+  function detectSource(el) {
+    try {
+      return vueSource(el) || reactSource(el);
+    } catch {
+      return null;
+    }
+  }
+
+  // Vue：優先用 vite-plugin-vue-inspector 的位置資訊 (檔案:行:欄)，沒有再從元件實例取 __file
+  function vueSource(el) {
+    const instance = findVueInstance(el);
+    const component = instance ? vueComponentName(instance) : null;
+    const usedIn = instance ? vueUsedIn(instance) : null;
+    const match = String(findInspectorData(el) || '').match(/^(.+?):(\d+):(\d+)$/);
+    if (match) return { framework: 'vue', file: match[1], line: Number(match[2]), component, usedIn };
+    if (!instance) return null;
+    for (let node = instance; node; node = node.parent) {
+      if (node.type && node.type.__file) return { framework: 'vue', file: node.type.__file, line: null, component: vueComponentName(node), usedIn };
+    }
+    return { framework: 'vue', file: null, line: null, component, usedIn };
+  }
+
+  // 元件在父層模板中被使用的位置 (props 從這裡傳入)；根元件沒有父層時回傳 null
+  function vueUsedIn(instance) {
+    const parent = instance.parent;
+    if (!parent) return null;
+    const props = instance.vnode && instance.vnode.props;
+    const match = String((props && props.__v_inspector) || '').match(/^(.+?):(\d+):(\d+)$/);
+    if (match) return { file: match[1], line: Number(match[2]), component: vueComponentName(parent) };
+    if (parent.type && parent.type.__file) return { file: parent.type.__file, line: null, component: vueComponentName(parent) };
+    return null;
+  }
+
+  // 新版 inspector 會把 data-v-inspector 從 DOM 移到 vnode.props.__v_inspector，舊版則留在屬性上
+  function findInspectorData(el) {
+    for (let node = el; node; node = node.parentElement) {
+      const props = node.__vnode && node.__vnode.props;
+      if (props && props.__v_inspector) return props.__v_inspector;
+      if (node.hasAttribute('data-v-inspector')) return node.getAttribute('data-v-inspector');
+    }
+    return null;
+  }
+
+  function findVueInstance(el) {
+    for (let node = el; node; node = node.parentElement) {
+      if (node.__vueParentComponent) return node.__vueParentComponent;
+    }
+    return null;
+  }
+
+  function vueComponentName(instance) {
+    const type = instance.type || {};
+    const name = type.name || type.__name;
+    if (name) return name;
+    return type.__file ? type.__file.split('/').pop().replace(/\.vue$/, '') : null;
+  }
+
+  // React：從 __reactFiber$ 取得 fiber；React 18 以前用 _debugSource，React 19 改從 _debugStack 推出檔案
+  function reactSource(el) {
+    let fiber = null;
+    for (let node = el; node && !fiber; node = node.parentElement) {
+      const key = Object.keys(node).find((k) => k.startsWith('__reactFiber$'));
+      if (key) fiber = node[key];
+    }
+    if (!fiber) return null;
+    const component = reactComponentName(fiber);
+    const usedIn = reactUsedIn(fiber._debugOwner);
+    return { framework: 'react', ...reactFiberLocation(fiber), component, usedIn };
+  }
+
+  // 寫出這段 JSX 的元件 (owner) 在父層被使用的位置；owner 由 createRoot 直接渲染 (沒有父層元件) 時回傳 null
+  function reactUsedIn(owner) {
+    if (!owner || !owner._debugOwner) return null;
+    const location = reactFiberLocation(owner);
+    if (!location.file) return null;
+    return { ...location, component: reactComponentName(owner) };
+  }
+
+  // fiber 對應的 JSX 位置：React 18 以前用 _debugSource，React 19 改從 _debugStack 推出檔案
+  function reactFiberLocation(fiber) {
+    const debugSource = fiber._debugSource;
+    if (debugSource && debugSource.fileName) return { file: debugSource.fileName, line: debugSource.lineNumber || null };
+    const file = fiber._debugStack ? fileFromStack(String(fiber._debugStack.stack || '')) : null;
+    return { file, line: null };
+  }
+
+  // 往上找第一個有名稱的 function / class 元件 (優先用 _debugOwner，即寫出這段 JSX 的元件)
+  function reactComponentName(fiber) {
+    for (let node = fiber._debugOwner || fiber.return; node; node = node._debugOwner || node.return) {
+      const type = node.type;
+      if (!type) continue;
+      const fn = typeof type === 'function' ? type : type.render || type.type;
+      const name = type.displayName || (fn && (fn.displayName || fn.name));
+      if (name) return name;
+    }
+    return null;
+  }
+
+  // React 19 開發模式的 JSX 呼叫堆疊：取第一個不在 node_modules / Vite 內部的網址路徑
+  // 行號是轉譯後的程式碼位置，和原始檔對不上，所以只取檔案
+  function fileFromStack(stack) {
+    for (const match of stack.matchAll(/https?:\/\/[^/\s)]+(\/[^?:\s)]+)(?:\?[^:\s)]*)?:\d+:\d+/g)) {
+      const file = decodeURIComponent(match[1]);
+      if (file.includes('/node_modules/') || file.startsWith('/@') || file.includes('/__wta/')) continue;
+      return file.replace(/^\//, '');
+    }
+    return null;
   }
 
   function describe(el) {

@@ -1,4 +1,5 @@
 // webToAgent bridge server：提供 HTML 預覽 + 注入圈選工具 + 接收修改需求轉給 CLI
+// 靜態模式：node server.js <資料夾>；proxy 模式：node server.js --proxy http://localhost:5173 (Vue / React 等 dev server)
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 
 const appDir = path.dirname(fileURLToPath(import.meta.url));
 const args = parseArgs(process.argv.slice(2));
-const rootDir = path.resolve(args.root || 'demo');
+const proxyTarget = args.proxy !== undefined ? parseProxyTarget(args.proxy) : null;
+const rootDir = proxyTarget ? null : path.resolve(args.root || 'demo');
 const startPort = Number(args.port || 5600);
 const maxPortTries = 20;
 let port = startPort;
@@ -17,7 +19,10 @@ const inboxFile = path.join(inboxDir, 'inbox.jsonl');
 const maxBody = 256 * 1024;
 const maxItems = 50;
 const statusValues = ['pending', 'done', 'skipped'];
-const injectTag = '<script src="/__wta/picker.js" defer></script>';
+const injectTag = proxyTarget
+  ? '<script src="/__wta/picker.js" data-wta-mode="proxy" defer></script>'
+  : '<script src="/__wta/picker.js" defer></script>';
+const loopHeader = 'x-webtoagent-proxy';
 
 const mimeTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -36,7 +41,7 @@ const mimeTypes = {
 
 const sseClients = new Set();
 
-if (!fs.existsSync(rootDir) || !fs.statSync(rootDir).isDirectory()) {
+if (rootDir && (!fs.existsSync(rootDir) || !fs.statSync(rootDir).isDirectory())) {
   console.error(`[WTA:error] 找不到預覽資料夾：${rootDir}`);
   process.exit(1);
 }
@@ -50,6 +55,7 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/__wta/events') return handleEvents(req, res);
   if (url.pathname === '/__wta/picker.js') return sendFile(res, path.join(appDir, 'client', 'picker.js'));
   if (url.pathname === '/__wta/picker.css') return sendFile(res, path.join(appDir, 'client', 'picker.css'));
+  if (proxyTarget) return proxyRequest(req, res);
   if (req.method !== 'GET' && req.method !== 'HEAD') return sendText(res, 405, 'Method Not Allowed');
 
   const filePath = resolveInRoot(url.pathname);
@@ -57,7 +63,9 @@ const server = http.createServer((req, res) => {
   sendFile(res, filePath, true);
 });
 
-watchRoot();
+// proxy 模式畫面更新交給 dev server 的 HMR，不監看資料夾
+if (proxyTarget) server.on('upgrade', proxyUpgrade);
+else watchRoot();
 
 // port 被占用時自動往後找，實際使用的 port 印在 [WTA:ready] 行
 server.on('error', (err) => {
@@ -71,7 +79,8 @@ server.on('error', (err) => {
   process.exit(1);
 });
 server.on('listening', () => {
-  console.log(`[WTA:ready] http://${host}:${port}/  root=${rootDir}  inbox=${inboxFile}`);
+  const mode = proxyTarget ? `proxy=${proxyTarget.origin}` : `root=${rootDir}`;
+  console.log(`[WTA:ready] http://${host}:${port}/  ${mode}  inbox=${inboxFile}`);
 });
 server.listen(port, host);
 
@@ -81,13 +90,105 @@ function parseArgs(list) {
   const result = {};
   for (let i = 0; i < list.length; i++) {
     if (list[i] === '--port') result.port = list[++i];
+    else if (list[i] === '--proxy') result.proxy = list[++i] || '';
     else if (!result.root) result.root = list[i];
   }
   return result;
 }
 
+// proxy 目標只允許本機 dev server，不轉送到外部網站
+function parseProxyTarget(value) {
+  let target;
+  try {
+    target = new URL(value);
+  } catch {
+    target = null;
+  }
+  if (!target || target.protocol !== 'http:' || !['localhost', '127.0.0.1'].includes(target.hostname)) {
+    console.error(`[WTA:error] --proxy 只接受 http://localhost 或 http://127.0.0.1 的網址：${value}`);
+    process.exit(1);
+  }
+  return target;
+}
+
+// 一般 HTTP 請求轉送到 dev server；text/html 回應插入圈選工具，其他原樣回傳
+function proxyRequest(req, res) {
+  if (req.headers[loopHeader]) return sendText(res, 508, 'Loop Detected：--proxy 指向了 webToAgent 自己');
+  const headers = { ...req.headers, host: proxyTarget.host, [loopHeader]: '1' };
+  // 不接受壓縮，HTML 才能直接插入
+  delete headers['accept-encoding'];
+  const proxyReq = http.request({
+    hostname: proxyTarget.hostname,
+    port: proxyTarget.port || 80,
+    method: req.method,
+    path: req.url,
+    headers
+  }, (proxyRes) => {
+    const type = String(proxyRes.headers['content-type'] || '');
+    const canInject = type.includes('text/html') && !proxyRes.headers['content-encoding'] && req.method !== 'HEAD';
+    if (!canInject) {
+      res.writeHead(proxyRes.statusCode, proxyRes.headers);
+      proxyRes.pipe(res);
+      return;
+    }
+    const chunks = [];
+    proxyRes.on('data', (chunk) => chunks.push(chunk));
+    proxyRes.on('end', () => {
+      const body = injectPicker(Buffer.concat(chunks).toString('utf8'));
+      const outHeaders = { ...proxyRes.headers, 'cache-control': 'no-store' };
+      delete outHeaders['content-length'];
+      delete outHeaders['transfer-encoding'];
+      delete outHeaders.etag;
+      outHeaders['content-length'] = Buffer.byteLength(body);
+      res.writeHead(proxyRes.statusCode, outHeaders);
+      res.end(body);
+    });
+  });
+  proxyReq.on('error', (err) => {
+    if (res.headersSent) return res.destroy();
+    sendText(res, 502, `Bad Gateway：無法連到 dev server ${proxyTarget.origin} (${err.code || err.message})`);
+  });
+  req.pipe(proxyReq);
+}
+
+// WebSocket upgrade 轉送 (Vite HMR 等)，連上後兩端 socket 直接對接
+function proxyUpgrade(req, socket, head) {
+  if (req.headers[loopHeader]) return socket.destroy();
+  const proxyReq = http.request({
+    hostname: proxyTarget.hostname,
+    port: proxyTarget.port || 80,
+    method: req.method,
+    path: req.url,
+    headers: { ...req.headers, host: proxyTarget.host, [loopHeader]: '1' }
+  });
+  proxyReq.on('upgrade', (proxyRes, proxySocket, proxyHead) => {
+    const lines = [`HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage}`];
+    for (let i = 0; i < proxyRes.rawHeaders.length; i += 2) lines.push(`${proxyRes.rawHeaders[i]}: ${proxyRes.rawHeaders[i + 1]}`);
+    socket.write(lines.join('\r\n') + '\r\n\r\n');
+    if (proxyHead.length) socket.write(proxyHead);
+    if (head.length) proxySocket.write(head);
+    proxySocket.pipe(socket);
+    socket.pipe(proxySocket);
+    proxySocket.on('error', () => socket.destroy());
+    socket.on('error', () => proxySocket.destroy());
+  });
+  // dev server 拒絕 upgrade 時，把狀態碼回給瀏覽器後關閉
+  proxyReq.on('response', (proxyRes) => {
+    socket.end(`HTTP/1.1 ${proxyRes.statusCode} ${proxyRes.statusMessage}\r\n\r\n`);
+    proxyRes.resume();
+  });
+  proxyReq.on('error', () => socket.destroy());
+  socket.on('error', () => proxyReq.destroy());
+  proxyReq.end();
+}
+
+function injectPicker(html) {
+  return html.includes('</body>') ? html.replace('</body>', `${injectTag}\n</body>`) : html + injectTag;
+}
+
 // 將 URL 路徑轉為 rootDir 內的實體檔案，防止路徑穿越
 function resolveInRoot(pathname) {
+  if (!rootDir) return null;
   let decoded;
   try {
     decoded = decodeURIComponent(pathname);
@@ -105,10 +206,7 @@ function sendFile(res, filePath, inject = false) {
   fs.readFile(filePath, (err, data) => {
     if (err) return sendText(res, 404, 'Not Found');
     let body = data;
-    if (inject && ext === '.html') {
-      const html = data.toString('utf8');
-      body = html.includes('</body>') ? html.replace('</body>', `${injectTag}\n</body>`) : html + injectTag;
-    }
+    if (inject && ext === '.html') body = injectPicker(data.toString('utf8'));
     res.writeHead(200, {
       'Content-Type': mimeTypes[ext] || 'application/octet-stream',
       'Cache-Control': 'no-store',
@@ -184,9 +282,9 @@ function handleFeedback(req, res) {
     } catch {
       return sendJson(res, 500, { ok: false, error: 'write failed' });
     }
-    const files = [...new Set(records.map((r) => r.file))].join(', ');
+    const files = [...new Set(records.map((r) => describeTarget(r, false)))].join(', ');
     const output = [`[WTA] batch ${batchId} ${records.length} items :: ${files}`];
-    for (const r of records) output.push(`[WTA]   #${r.no} ${r.file} ${r.selector} :: ${r.instruction.replace(/\s+/g, ' ')}`);
+    for (const r of records) output.push(`[WTA]   #${r.no} ${describeTarget(r, true)} ${r.selector} :: ${r.instruction.replace(/\s+/g, ' ')}`);
     console.log(output.join('\n'));
     sendJson(res, 200, { ok: true, batchId, count: records.length });
   });
@@ -240,14 +338,22 @@ function toRecord(item, batchId, no, ts) {
   const instruction = typeof item.instruction === 'string' ? item.instruction.trim() : '';
   const selector = typeof item.selector === 'string' ? item.selector.trim() : '';
   if (!instruction || !selector) return null;
-  const page = String(item.page || '/');
-  const filePath = resolveInRoot(page);
+  const page = String(item.page || '/').slice(0, 1000);
+  const source = toSource(item.source);
+  let file = null;
+  if (proxyTarget) file = source && source.file ? toProjectPath(source.file) : null;
+  else {
+    const filePath = resolveInRoot(page);
+    file = filePath ? path.relative(process.cwd(), filePath) : null;
+  }
+  if (source && source.usedIn && source.usedIn.file) source.usedIn.file = toProjectPath(source.usedIn.file);
   return {
     id: `${batchId}-${no}`,
     batchId,
     no,
-    file: filePath ? path.relative(process.cwd(), filePath) : null,
+    file,
     page,
+    source,
     selector: selector.slice(0, 1000),
     outerHTML: String(item.outerHTML || '').slice(0, 2000),
     text: String(item.text || '').slice(0, 300),
@@ -259,6 +365,49 @@ function toRecord(item, batchId, no, ts) {
   };
 }
 
+// 驗證 picker 偵測到的元件原始檔資訊 (Vue / React 開發模式)，格式不符或全空時回傳 null
+function toSource(value) {
+  if (!value || typeof value !== 'object') return null;
+  const source = { framework: pickText(value.framework, 20), ...toLocation(value), usedIn: null };
+  if (!source.file && !source.component) return null;
+  const usedIn = value.usedIn && typeof value.usedIn === 'object' ? toLocation(value.usedIn) : null;
+  if (usedIn && usedIn.file) source.usedIn = usedIn;
+  return source;
+}
+
+// 檔案、行號、元件名稱三個欄位的型別檢查與截斷 (source 與 usedIn 共用)
+function toLocation(value) {
+  const line = Number.isInteger(value.line) && value.line > 0 && value.line < 1e7 ? value.line : null;
+  return { file: pickText(value.file, 500), line, component: pickText(value.component, 200) };
+}
+
+function pickText(value, max) {
+  return typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : null;
+}
+
+// 磁碟上存在的絕對路徑轉成相對於目前專案根目錄的路徑；網址式路徑 (例：/src/App.jsx) 去掉開頭的 / 或 ./
+function toProjectPath(file) {
+  if (path.isAbsolute(file) && fs.existsSync(file)) return path.relative(process.cwd(), file);
+  return file.replace(/^\.?\//, '');
+}
+
+function formatLocation(location) {
+  return location.line ? `${location.file}:${location.line}` : location.file;
+}
+
+// stdout 顯示用：有原始檔就印檔案 (含行號)，React 19 只有元件名稱時印 <元件>，都沒有就印網址路徑
+function describeTarget(record, withLine) {
+  const { file, source } = record;
+  if (file) {
+    const target = withLine && proxyTarget && source && source.line ? `${file}:${source.line}` : file;
+    return withLine && source && source.usedIn ? `${target} (用於 ${formatLocation(source.usedIn)})` : target;
+  }
+  if (source && source.component) {
+    return withLine && source.usedIn ? `<${source.component}> (用於 ${formatLocation(source.usedIn)})` : `<${source.component}>`;
+  }
+  return record.page;
+}
+
 function createId() {
   const now = new Date();
   const pad = (n) => String(n).padStart(2, '0');
@@ -267,6 +416,11 @@ function createId() {
 }
 
 function handleEvents(req, res) {
+  // proxy 模式不提供自動重新整理；204 讓瀏覽器的 EventSource 停止重連
+  if (proxyTarget) {
+    res.writeHead(204);
+    return res.end();
+  }
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-store',

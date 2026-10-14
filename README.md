@@ -28,13 +28,31 @@ scripts/install-skill.sh
 
 ## 在 Claude Code 中使用
 
-在任何專案的 Claude Code 中輸入 `/webtoagent <資料夾> [--port 5600]`，或說「啟動 webToAgent 預覽 `<資料夾>`」。
+依專案類型選擇用法：
+
+| 專案 | 輸入 |
+|---|---|
+| 一般 HTML | `/webtoagent <資料夾>` |
+| Vue / React 等有 dev server 的專案 | `/webtoagent`，或 `/webtoagent --proxy <dev server 網址>` |
+
+- 不帶參數時，專案有 `dev` 腳本會詢問是否幫你啟動 dev server；沒有就詢問要預覽的資料夾
+- Vue / React 專案不要用 `<資料夾>`：不會編譯 .vue / .jsx，畫面會是空白
+- 可加 `--port 5600` 指定 port，也可以用說的：「啟動 webToAgent 預覽 `<資料夾>`」
 
 - Claude Code 會在背景啟動預覽 server，並給你網址
 - 在瀏覽器圈選元素、寫下需求、確認送出後，Claude Code 會先列出修改清單，等你確認才修改
 - 改完後頁面自動重新整理
 - 需求紀錄存在該專案的 `.webtoagent/`，建議加入 `.gitignore`
 - skill 名稱規定只能用小寫，所以指令是 `/webtoagent`
+
+### Vue / React 專案
+
+有 dev server 的專案（Vite + Vue / React 等）用 proxy 模式，不用改專案設定：
+
+- 已經自己執行 `npm run dev` 時，用 `--proxy` 帶入 dev server 網址 (例：`http://localhost:5173`)
+- 請開 webToAgent 給的網址（預設 `http://127.0.0.1:5600/`），不是 dev server 原本的網址
+- 需求會附上元素所在的元件原始檔（例：`src/components/MyButton.vue`），改完由 dev server 的 HMR 更新畫面
+- 只支援開發模式；React 19 取不到行號，只有檔案與元件名稱
 
 ## 瀏覽器操作
 
@@ -55,3 +73,4 @@ scripts/install-skill.sh
 - 只在本機 `127.0.0.1` 執行，不對外網路開放
 - 只接受預覽頁面本身送出的需求，其他網站無法送出
 - 只能讀取預覽資料夾內的檔案
+- proxy 模式只能轉送到本機（`localhost` / `127.0.0.1`）的 dev server

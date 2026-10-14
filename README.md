@@ -4,6 +4,10 @@ English | [繁體中文](README.zh-TW.md)
 
 Pick HTML elements in the browser, queue up multiple change requests, and send them to a CLI agent (Claude Code) in one batch. The page reloads automatically after the changes are made.
 
+[![webToAgent demo](https://img.youtube.com/vi/w7ge1LemSP8/hqdefault.jpg)](https://youtu.be/w7ge1LemSP8)
+
+▶ [Demo video](https://youtu.be/w7ge1LemSP8) (narrated in Traditional Chinese)
+
 ## Install from GitHub
 
 Requires Node.js 20+, git, bash (macOS or WSL on Windows), and Claude Code. No dependencies, no `npm install` needed.

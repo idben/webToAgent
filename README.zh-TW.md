@@ -4,6 +4,10 @@
 
 在瀏覽器圈選 HTML 元素，記住多筆修改需求後一次送到 CLI Agent（Claude Code）處理，修改完成後頁面自動重新整理。
 
+[![webToAgent demo](https://img.youtube.com/vi/w7ge1LemSP8/hqdefault.jpg)](https://youtu.be/w7ge1LemSP8)
+
+▶ [示範操作影片](https://youtu.be/w7ge1LemSP8)
+
 ## 從 GitHub 安裝
 
 需要 Node.js 20 以上、git、bash (macOS 或 Windows 的 WSL)，以及 Claude Code。零相依套件，不需要 `npm install`。

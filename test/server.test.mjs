@@ -51,6 +51,36 @@ test('靜態模式：注入 picker、阻擋路徑穿越', async () => {
   assert.equal((await request(srv, { path: '/%2e%2e/secret.txt' })).status, 404);
 });
 
+test('防嵌入：注入 picker 的頁面帶 frame-ancestors，靜態資源不帶', async () => {
+  const srv = await startServer([siteDir]);
+  const home = await request(srv, { path: '/' });
+  assert.equal(home.headers['content-security-policy'], "frame-ancestors 'self'");
+  assert.equal(home.headers['x-frame-options'], 'SAMEORIGIN');
+  const picker = await request(srv, { path: '/__wta/picker.js' });
+  assert.equal(picker.status, 200);
+  assert.equal(picker.headers['content-security-policy'], undefined);
+});
+
+test('--log：輸出寫進指定檔案並自動建立資料夾', async () => {
+  const cwd = fs.mkdtempSync(path.join(tmpRoot, 'cwd-'));
+  const logFile = path.join(cwd, 'logs', 'deep', 'server.log');
+  const port = randomPort();
+  const child = spawn(process.execPath, [serverJs, siteDir, '--port', String(port), '--log', 'logs/deep/server.log'], { cwd });
+  running.add(child);
+  let stdout = '';
+  child.stdout.on('data', (chunk) => (stdout += chunk));
+  child.stderr.on('data', (chunk) => (stdout += chunk));
+  const readLog = () => (fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '');
+  await waitFor(() => readLog().includes('[WTA:ready]'), 5000);
+  const actualPort = Number(readLog().match(/127\.0\.0\.1:(\d+)\//)[1]);
+  const srv = { port: actualPort, origin: `http://127.0.0.1:${actualPort}` };
+  const res = await postJson(srv, '/api/feedback', { items: [{ selector: 'h1', instruction: 'log test' }] });
+  assert.equal(res.status, 200);
+  await waitFor(() => readLog().includes(':: log test'));
+  assert.equal(stdout, '');
+  child.kill();
+});
+
 test('Host 與 Origin 檢查', async () => {
   const srv = await startServer([siteDir]);
   const evil = { host: `evil.example:${srv.port}` };
@@ -116,7 +146,9 @@ for (const kind of ['throw', 'emit']) {
 
 test('proxy 模式：注入 picker、Host 檢查、WebSocket upgrade', async () => {
   const dev = http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/html' });
+    const headers = { 'Content-Type': 'text/html' };
+    if (req.url === '/csp') headers['Content-Security-Policy'] = "script-src 'self'";
+    res.writeHead(200, headers);
     res.end('<html><body>dev</body></html>');
   });
   dev.on('upgrade', (req, socket) => {
@@ -129,6 +161,11 @@ test('proxy 模式：注入 picker、Host 檢查、WebSocket upgrade', async () 
     const page = await request(srv, { path: '/' });
     assert.equal(page.status, 200);
     assert.match(page.body, /data-wta-mode="proxy"/);
+    assert.equal(page.headers['content-security-policy'], "frame-ancestors 'self'");
+    assert.equal(page.headers['x-frame-options'], 'SAMEORIGIN');
+    // dev server 原本的 CSP 保留，與 frame-ancestors 並列 (Node 會把重複標頭以逗號合併)
+    const withCsp = await request(srv, { path: '/csp' });
+    assert.equal(withCsp.headers['content-security-policy'], "script-src 'self', frame-ancestors 'self'");
     assert.equal((await request(srv, { path: '/', headers: { host: `evil.example:${srv.port}` } })).status, 403);
     assert.match(await rawUpgrade(srv.port, `127.0.0.1:${srv.port}`), /^HTTP\/1\.1 101/);
     assert.equal(await rawUpgrade(srv.port, `evil.example:${srv.port}`), '');
@@ -179,12 +216,12 @@ function request(srv, { method = 'GET', path: urlPath, headers = {}, body = null
       // SSE 不會結束，收到狀態碼就回傳
       if (String(res.headers['content-type']).includes('text/event-stream')) {
         res.destroy();
-        return resolve({ status: res.statusCode, body: '' });
+        return resolve({ status: res.statusCode, headers: res.headers, body: '' });
       }
       let data = '';
       res.setEncoding('utf8');
       res.on('data', (chunk) => (data += chunk));
-      res.on('end', () => resolve({ status: res.statusCode, body: data }));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: data }));
     });
     req.on('error', reject);
     req.end(body);

@@ -82,7 +82,13 @@ scripts/install-skill.sh
 
 - Claude Code 沙箱擋住檔案監看時，server 會改成每秒掃描預覽資料夾，自動重新整理照常有效 (資料夾超過 5000 個檔案時停止掃描，需手動重新整理)
 - server 只印出預覽網址，請自己在瀏覽器開啟
-- server 需要使用沙箱允許的本機 port (預設 5600，或用 `--port` 指定)
+- 沙箱內啟動的 server 預設無法監聽 port，擇一處理：
+  - **讓 server 在沙箱外執行 (各平台通用)**：在 `~/.claude/settings.json` 加入下列設定。專案層級的 `.claude/settings*.json` 在管理員強制沙箱時會被忽略
+    ```json
+    { "sandbox": { "excludedCommands": ["node *webtoagent/server.js *"] } }
+    ```
+  - **macOS 留在沙箱內**：開 `"sandbox": { "network": { "allowLocalBinding": true } }`
+  - **Linux / WSL2**：每個沙箱指令有自己的 loopback，沙箱內啟動的 server 瀏覽器連不到，請用上面的 `excludedCommands`，或在專案根目錄自己開終端機執行 `node ~/.claude/skills/webtoagent/server.js <資料夾> --log .webtoagent/server.log`，再告訴 Claude 已經啟動
 
 ## 安全
 
@@ -90,4 +96,5 @@ scripts/install-skill.sh
 - 只接受預覽頁面本身送出的需求，其他網站無法送出
 - 只能讀取預覽資料夾內的檔案
 - Host 不是 `127.0.0.1` / `localhost` 的請求一律拒絕，防止 DNS 重綁定 (DNS rebinding) 攻擊
+- 預覽頁不能被其他網站用 iframe 嵌入
 - proxy 模式只能轉送到本機（`localhost` / `127.0.0.1`）的 dev server

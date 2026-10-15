@@ -82,7 +82,13 @@ Projects with a dev server (Vite + Vue / React, etc.) use proxy mode, with no ch
 
 - If the Claude Code sandbox blocks file watching, the server falls back to polling the preview folder every second, so auto-reload keeps working (polling stops for folders with more than 5000 files; reload the page manually then)
 - The server only prints the preview URL; open it in your browser yourself
-- The server needs a local port the sandbox allows (default 5600, or pass `--port`)
+- A server started inside the sandbox can't listen on a port by default. Pick one:
+  - **Run the server outside the sandbox (any platform)**: add this to `~/.claude/settings.json`. Project-level `.claude/settings*.json` entries are ignored when an admin requires the sandbox
+    ```json
+    { "sandbox": { "excludedCommands": ["node *webtoagent/server.js *"] } }
+    ```
+  - **Keep it sandboxed on macOS**: set `"sandbox": { "network": { "allowLocalBinding": true } }`
+  - **Linux / WSL2**: each sandboxed command has its own loopback, so the browser can't reach a server started in the sandbox. Use `excludedCommands` above, or run `node ~/.claude/skills/webtoagent/server.js <folder> --log .webtoagent/server.log` in your own terminal from the project root, then tell Claude it's running
 
 ## Security
 
@@ -90,4 +96,5 @@ Projects with a dev server (Vite + Vue / React, etc.) use proxy mode, with no ch
 - Accepts requests only from the preview page itself; other websites can't submit
 - Can read only files inside the preview folder
 - Rejects requests whose Host isn't `127.0.0.1` / `localhost`, blocking DNS rebinding
+- Preview pages can't be embedded in an iframe by other websites
 - Proxy mode forwards only to a local dev server (`localhost` / `127.0.0.1`)

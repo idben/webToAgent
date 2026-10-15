@@ -1,13 +1,16 @@
 // webToAgent bridge server：提供 HTML 預覽 + 注入圈選工具 + 接收修改需求轉給 CLI
 // 靜態模式：node server.js <資料夾>；proxy 模式：node server.js --proxy http://localhost:5173 (Vue / React 等 dev server)
+// --log <檔案>：輸出寫到檔案而非 stdout
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import util from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 const appDir = path.dirname(fileURLToPath(import.meta.url));
 const args = parseArgs(process.argv.slice(2));
+if (args.log) setupLogFile(path.resolve(args.log));
 const proxyTarget = args.proxy !== undefined ? parseProxyTarget(args.proxy) : null;
 const rootDir = proxyTarget ? null : path.resolve(args.root || 'demo');
 const startPort = Number(args.port || 5600);
@@ -27,6 +30,11 @@ const injectTag = proxyTarget
   ? '<script src="/__wta/picker.js" data-wta-mode="proxy" defer></script>'
   : '<script src="/__wta/picker.js" defer></script>';
 const loopHeader = 'x-webtoagent-proxy';
+// 注入 picker 的頁面不讓其他網站用 iframe 嵌入；用 self 讓專案自己的 iframe 仍可運作
+const frameHeaders = {
+  'content-security-policy': "frame-ancestors 'self'",
+  'x-frame-options': 'SAMEORIGIN'
+};
 
 const mimeTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -97,9 +105,22 @@ function parseArgs(list) {
   for (let i = 0; i < list.length; i++) {
     if (list[i] === '--port') result.port = list[++i];
     else if (list[i] === '--proxy') result.proxy = list[++i] || '';
+    else if (list[i] === '--log') result.log = list[++i];
     else if (!result.root) result.root = list[i];
   }
   return result;
+}
+
+// 輸出改為同步附加到檔案，啟動指令不需要 shell 導向，沙箱的 excludedCommands 才對得上
+function setupLogFile(file) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const write = (...items) => fs.appendFileSync(file, util.format(...items) + '\n');
+  console.log = write;
+  console.error = write;
+  process.on('uncaughtException', (err) => {
+    write(`[WTA:error] ${oneLine(err.stack || err)}`);
+    process.exit(1);
+  });
 }
 
 // proxy 目標只允許本機 dev server，不轉送到外部網站
@@ -141,7 +162,10 @@ function proxyRequest(req, res) {
     proxyRes.on('data', (chunk) => chunks.push(chunk));
     proxyRes.on('end', () => {
       const body = injectPicker(Buffer.concat(chunks).toString('utf8'));
-      const outHeaders = { ...proxyRes.headers, 'cache-control': 'no-store' };
+      const outHeaders = { ...proxyRes.headers, 'cache-control': 'no-store', 'x-frame-options': frameHeaders['x-frame-options'] };
+      // dev server 原本的 CSP 保留，另外加一條 frame-ancestors (瀏覽器兩條都套用)
+      const csp = proxyRes.headers['content-security-policy'];
+      outHeaders['content-security-policy'] = csp ? [].concat(csp, frameHeaders['content-security-policy']) : frameHeaders['content-security-policy'];
       delete outHeaders['content-length'];
       delete outHeaders['transfer-encoding'];
       delete outHeaders.etag;
@@ -211,12 +235,13 @@ function sendFile(res, filePath, inject = false) {
   const ext = path.extname(filePath).toLowerCase();
   fs.readFile(filePath, (err, data) => {
     if (err) return sendText(res, 404, 'Not Found');
-    let body = data;
-    if (inject && ext === '.html') body = injectPicker(data.toString('utf8'));
+    const isPage = inject && ext === '.html';
+    const body = isPage ? injectPicker(data.toString('utf8')) : data;
     res.writeHead(200, {
       'Content-Type': mimeTypes[ext] || 'application/octet-stream',
       'Cache-Control': 'no-store',
-      'X-Content-Type-Options': 'nosniff'
+      'X-Content-Type-Options': 'nosniff',
+      ...(isPage ? frameHeaders : {})
     });
     res.end(body);
   });

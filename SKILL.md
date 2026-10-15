@@ -23,12 +23,14 @@ description: 在瀏覽器預覽 HTML (或 Vue / React 等 dev server 專案) 並
 2. **在目前專案根目錄背景執行**（Bash `run_in_background`，Node 依使用者指定的 nvm 環境）：
    ```bash
    # 靜態模式
-   mkdir -p .webtoagent && node <skill>/server.js <資料夾> [--port N] >> .webtoagent/server.log 2>&1
+   node <skill>/server.js <資料夾> [--port N] --log .webtoagent/server.log
    # proxy 模式
-   mkdir -p .webtoagent && node <skill>/server.js --proxy <dev server 網址> [--port N] >> .webtoagent/server.log 2>&1
+   node <skill>/server.js --proxy <dev server 網址> [--port N] --log .webtoagent/server.log
    ```
+   - 維持單一 node 指令，不要加 `mkdir`、`&&`、`>>` 等 (server 會自己建立資料夾並寫 log)；這樣使用者在沙箱設定的 `excludedCommands` 才對得上
+   - 使用者說已經在自己的終端機啟動 server：不再啟動，直接從 `.webtoagent/server.log` 取最後一行 `[WTA:ready]` 的網址，接著第 4 步開始監看
    - proxy 模式要請使用者開 webToAgent 的網址（`[WTA:ready]` 那行），不是 dev server 原本的網址，才會有圈選工具
-3. **確認啟動**：等 `.webtoagent/server.log` 出現 `[WTA:ready]`，從該行取得實際網址交給使用者；出現 `[WTA:error]` 就回報原因。
+3. **確認啟動**：等 `.webtoagent/server.log` 出現新的 `[WTA:ready]` (log 會累積，取最後一行)，從該行取得實際網址交給使用者；出現 `[WTA:error]` 就回報原因。
    - `[WTA:warn]` 不是啟動失敗 (仍以 `[WTA:ready]` 為準)：`改用輪詢` 表示檔案監看被擋 (例：沙箱)，自動重新整理仍有效，不需告知；`自動重新整理停用` 才告知使用者修改後要手動重新整理頁面
 4. **開始監看**（Monitor，`timeout_ms` 設最大值）：
    ```bash

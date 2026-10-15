@@ -19,6 +19,7 @@ let port = startPort;
 const host = '127.0.0.1';
 const inboxDir = path.resolve('.webtoagent');
 const inboxFile = path.join(inboxDir, 'inbox.jsonl');
+const lockFile = path.join(inboxDir, 'server.lock');
 const maxBody = 256 * 1024;
 const maxDrain = 32 * 1024 * 1024;
 const pollInterval = 1000;
@@ -26,6 +27,8 @@ const maxPollFiles = 5000;
 const pollSkip = new Set(['node_modules', '.git', '.webtoagent']);
 const maxItems = 50;
 const statusValues = ['pending', 'done', 'skipped'];
+// 與 client/picker.js 的 pickComputed 相同
+const computedKeys = ['color', 'backgroundColor', 'fontSize', 'fontWeight', 'lineHeight', 'margin', 'padding', 'display', 'width', 'height'];
 const injectTag = proxyTarget
   ? '<script src="/__wta/picker.js" data-wta-mode="proxy" defer></script>'
   : '<script src="/__wta/picker.js" defer></script>';
@@ -57,7 +60,10 @@ if (rootDir && (!fs.existsSync(rootDir) || !fs.statSync(rootDir).isDirectory()))
   console.error(`[WTA:error] 找不到預覽資料夾：${rootDir}`);
   process.exit(1);
 }
+const realRootDir = rootDir ? fs.realpathSync.native(rootDir) : null;
+const projectRoot = findProjectRoot();
 fs.mkdirSync(inboxDir, { recursive: true });
+acquireLock();
 
 const server = http.createServer((req, res) => {
   if (!isAllowedHost(req)) return sendText(res, 403, 'Forbidden host');
@@ -93,12 +99,130 @@ server.on('error', (err) => {
   process.exit(1);
 });
 server.on('listening', () => {
+  writeLock({ pid: process.pid, port });
   const mode = proxyTarget ? `proxy=${proxyTarget.origin}` : `root=${rootDir}`;
   console.log(`[WTA:ready] http://${host}:${port}/  ${mode}  inbox=${inboxFile}`);
 });
 server.listen(port, host);
 
 // ---------- functions ----------
+
+// 同一個 inbox 只允許一個 server：handleStatus 會整份改寫 inbox，兩個 server 同時寫會互相蓋掉需求
+// 鎖檔內容先寫進暫存檔再用 hard link 建立，建立的瞬間內容就完整，不會有「檔案存在但是空的」空窗
+function acquireLock() {
+  const tmp = `${lockFile}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ pid: process.pid }));
+  const fail = (message) => {
+    fs.rmSync(tmp, { force: true });
+    console.error(`[WTA:error] ${message}`);
+    process.exit(1);
+  };
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (createExclusive(tmp, lockFile)) {
+      fs.rmSync(tmp, { force: true });
+      process.on('exit', releaseLock);
+      // 以訊號結束時仍經過 exit 事件移除鎖檔，結束碼維持 128 + 訊號編號
+      for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]]) process.on(signal, () => process.exit(code));
+      return;
+    }
+    const other = readLock();
+    if (other === undefined) continue; // 鎖檔剛好被移除，重試
+    if (other === null) fail(`${lockFile} 內容無法辨識，可能有其他 webToAgent server 在執行；確認沒有之後刪除它再啟動`);
+    if (isAlive(other.pid)) {
+      fail(other.port
+        ? `這個專案已有 webToAgent server 在執行 (pid ${other.pid}，網址 http://${host}:${other.port}/)，兩個 server 共用 inbox 會遺失需求，請沿用它；網址連不上時，確認沒有其他 webToAgent server 後刪除 ${lockFile} 再啟動`
+        : `鎖檔記錄的 pid ${other.pid} 仍在執行，但無法確認是不是 webToAgent server；確認沒有其他 webToAgent server 後刪除 ${lockFile} 再啟動`);
+    }
+    // 上一個 server 沒有正常結束 (例：被強制終止) 留下的鎖檔
+    takeOverStaleLock(other.pid, tmp);
+  }
+  fail(`無法建立 ${lockFile}`);
+}
+
+// 接管陳舊鎖檔時另外取得一個接管鎖，同一時間只有一個行程能刪除舊鎖，避免兩個行程先後刪掉對方剛建立的鎖
+function takeOverStaleLock(stalePid, tmp) {
+  const takeoverFile = `${lockFile}.takeover`;
+  if (!createExclusive(tmp, takeoverFile)) {
+    // 另一個行程正在接管；接管鎖超過 5 秒視為殘留
+    try {
+      if (Date.now() - fs.statSync(takeoverFile).mtimeMs > 5000) fs.rmSync(takeoverFile, { force: true });
+    } catch {
+      // 已被移除
+    }
+    sleepSync(50);
+    return;
+  }
+  try {
+    const current = readLock();
+    if (current && current.pid === stalePid) fs.rmSync(lockFile, { force: true });
+  } finally {
+    fs.rmSync(takeoverFile, { force: true });
+  }
+}
+
+// 以 hard link 建立檔案：目標已存在時失敗，成功時內容與來源相同；不支援 hard link 的檔案系統改用 wx 寫入
+function createExclusive(source, target) {
+  try {
+    fs.linkSync(source, target);
+    return true;
+  } catch (err) {
+    if (err.code === 'EEXIST') return false;
+  }
+  try {
+    fs.writeFileSync(target, fs.readFileSync(source), { flag: 'wx' });
+    return true;
+  } catch (err) {
+    if (err.code === 'EEXIST') return false;
+    throw err;
+  }
+}
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// 鎖檔不存在回傳 undefined，內容無法解析回傳 null
+function readLock() {
+  let text;
+  try {
+    text = fs.readFileSync(lockFile, 'utf8');
+  } catch (err) {
+    return err.code === 'ENOENT' ? undefined : null;
+  }
+  try {
+    const data = JSON.parse(text);
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+// 寫暫存檔再換名，讀的一方不會讀到寫到一半的內容
+function writeLock(data) {
+  const tmp = `${lockFile}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(data));
+    fs.renameSync(tmp, lockFile);
+  } catch {
+    fs.rmSync(tmp, { force: true });
+  }
+}
+
+function releaseLock() {
+  const lock = readLock();
+  if (lock && lock.pid === process.pid) fs.rmSync(lockFile, { force: true });
+}
+
+// EPERM 代表行程存在但不能送訊號 (例：Claude Code 沙箱裡每個指令各自隔離)，仍視為執行中
+function isAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM';
+  }
+}
 
 function parseArgs(list) {
   const result = {};
@@ -212,8 +336,12 @@ function proxyUpgrade(req, socket, head) {
   proxyReq.end();
 }
 
+// 插在最後一個 </body> 前：頁面腳本的字串裡也可能出現 </body>，插在第一個會把腳本切斷
+// 只在最後一個 </html> 之前找，</html> 之後的註解 (例：產生器資訊) 裡出現 </body> 也不影響
 function injectPicker(html) {
-  return html.includes('</body>') ? html.replace('</body>', `${injectTag}\n</body>`) : html + injectTag;
+  const end = html.lastIndexOf('</html>');
+  const index = html.lastIndexOf('</body>', end === -1 ? Infinity : end);
+  return index === -1 ? html + injectTag : `${html.slice(0, index)}${injectTag}\n${html.slice(index)}`;
 }
 
 // 將 URL 路徑轉為 rootDir 內的實體檔案，防止路徑穿越
@@ -228,7 +356,15 @@ function resolveInRoot(pathname) {
   let target = path.resolve(rootDir, '.' + decoded);
   if (target !== rootDir && !target.startsWith(rootDir + path.sep)) return null;
   if (fs.existsSync(target) && fs.statSync(target).isDirectory()) target = path.join(target, 'index.html');
-  return fs.existsSync(target) && fs.statSync(target).isFile() ? target : null;
+  if (!fs.existsSync(target) || !fs.statSync(target).isFile()) return null;
+  // 符號連結可能指到預覽資料夾外，以實際路徑再檢查一次，之後也讀實際路徑 (檢查後才換成連結也讀不到外面)
+  let real;
+  try {
+    real = fs.realpathSync.native(target);
+  } catch {
+    return null;
+  }
+  return real === realRootDir || real.startsWith(realRootDir + path.sep) ? real : null;
 }
 
 function sendFile(res, filePath, inject = false) {
@@ -291,6 +427,8 @@ function readJsonBody(req, res, callback) {
     } catch {
       return sendJson(res, 400, { ok: false, error: 'invalid json' });
     }
+    // null、陣列、數字等合法 JSON 也不是需求格式；null 直接取屬性會讓 server 結束
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return sendJson(res, 400, { ok: false, error: 'json object required' });
     callback(data);
   });
 }
@@ -353,15 +491,19 @@ function handleStatus(req, res) {
       } catch {
         return line;
       }
-      if (!pending.has(record.id)) return line;
+      if (!record || typeof record !== 'object' || !pending.has(record.id)) return line;
       pending.delete(record.id);
       return JSON.stringify({ ...record, status: data.status, updatedAt });
     });
     const updated = new Set(ids).size - pending.size;
     if (updated) {
+      // 先寫暫存檔再換名，寫到一半中斷也不會留下截斷的 inbox
+      const tmpFile = `${inboxFile}.${process.pid}.tmp`;
       try {
-        fs.writeFileSync(inboxFile, lines.join('\n'));
+        fs.writeFileSync(tmpFile, lines.join('\n'));
+        fs.renameSync(tmpFile, inboxFile);
       } catch {
+        fs.rmSync(tmpFile, { force: true });
         return sendJson(res, 500, { ok: false, error: 'write failed' });
       }
     }
@@ -379,12 +521,11 @@ function toRecord(item, batchId, no, ts) {
   const page = String(item.page || '/').slice(0, 1000);
   const source = toSource(item.source);
   let file = null;
-  if (proxyTarget) file = source && source.file ? toProjectPath(source.file) : null;
+  if (proxyTarget) file = source ? source.file : null;
   else {
     const filePath = resolveInRoot(page);
     file = filePath ? path.relative(process.cwd(), filePath) : null;
   }
-  if (source && source.usedIn && source.usedIn.file) source.usedIn.file = toProjectPath(source.usedIn.file);
   return {
     id: `${batchId}-${no}`,
     batchId,
@@ -395,9 +536,9 @@ function toRecord(item, batchId, no, ts) {
     selector: selector.slice(0, 1000),
     outerHTML: String(item.outerHTML || '').slice(0, 2000),
     text: String(item.text || '').slice(0, 300),
-    computed: typeof item.computed === 'object' && item.computed ? item.computed : {},
+    computed: toComputed(item.computed),
     instruction: instruction.slice(0, 2000),
-    viewport: typeof item.viewport === 'object' && item.viewport ? item.viewport : null,
+    viewport: toViewport(item.viewport),
     ts,
     status: 'pending'
   };
@@ -416,7 +557,26 @@ function toSource(value) {
 // 檔案、行號、元件名稱三個欄位的型別檢查與截斷 (source 與 usedIn 共用)
 function toLocation(value) {
   const line = Number.isInteger(value.line) && value.line > 0 && value.line < 1e7 ? value.line : null;
-  return { file: pickText(value.file, 500), line, component: pickText(value.component, 200) };
+  const file = pickText(value.file, 500);
+  return { file: file && toProjectPath(file), line, component: pickText(value.component, 200) };
+}
+
+// 只保留 picker 會送的樣式欄位 (pickComputed)，避免頁面腳本塞入大量內容進 inbox
+function toComputed(value) {
+  if (!value || typeof value !== 'object') return {};
+  const result = {};
+  for (const key of computedKeys) {
+    if (typeof value[key] === 'string') result[key] = value[key].slice(0, 200);
+  }
+  return result;
+}
+
+function toViewport(value) {
+  if (!value || typeof value !== 'object') return null;
+  const size = (n) => (Number.isInteger(n) && n >= 0 && n < 1e5 ? n : null);
+  const w = size(value.w);
+  const h = size(value.h);
+  return w === null || h === null ? null : { w, h };
 }
 
 function pickText(value, max) {
@@ -424,9 +584,30 @@ function pickText(value, max) {
 }
 
 // 磁碟上存在的絕對路徑轉成相對於目前專案根目錄的路徑；網址式路徑 (例：/src/App.jsx) 去掉開頭的 / 或 ./
+// 路徑來自頁面，可被竄改：落在專案外 (例：/etc/hosts、~/.zshrc) 一律回傳 null，不讓 Claude 去改專案外的檔案
+// 專案範圍是 git 根目錄 (monorepo 在 apps/web 啟動時，packages/ 的共用元件仍算專案內)，不在 git repo 時用目前目錄
 function toProjectPath(file) {
-  if (path.isAbsolute(file) && fs.existsSync(file)) return path.relative(process.cwd(), file);
-  return file.replace(/^\.?\//, '');
+  if (file.startsWith('~')) return null;
+  const cwd = process.cwd();
+  let relative = file.replace(/^\.?\//, '');
+  if (path.isAbsolute(file) && fs.existsSync(file)) {
+    try {
+      relative = path.relative(cwd, fs.realpathSync.native(file));
+    } catch {
+      return null;
+    }
+  }
+  const resolved = path.resolve(cwd, relative);
+  return resolved === projectRoot || resolved.startsWith(projectRoot + path.sep) ? relative : null;
+}
+
+// 從目前目錄往上找含 .git 的資料夾
+function findProjectRoot() {
+  const cwd = fs.realpathSync.native(process.cwd());
+  for (let dir = cwd; ; dir = path.dirname(dir)) {
+    if (fs.existsSync(path.join(dir, '.git'))) return dir;
+    if (path.dirname(dir) === dir) return cwd;
+  }
 }
 
 function formatLocation(location) {

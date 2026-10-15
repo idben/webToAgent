@@ -551,7 +551,12 @@
     const cs = getComputedStyle(document.documentElement);
     return daisyGroups
       .map((group) => {
-        const chips = group.map((name) => chipHtml(name, cs.getPropertyValue(`--color-${name}`).trim())).join('');
+        // 值來自頁面的 CSS 變數，只接受合法顏色 (與專案自訂色的檢查相同)
+        const chips = group
+          .map((name) => [name, cs.getPropertyValue(`--color-${name}`).trim()])
+          .filter(([, value]) => value && CSS.supports('color', value))
+          .map(([name, value]) => chipHtml(name, value))
+          .join('');
         return `<div class="wta-chips">${chips}</div>`;
       })
       .join('');
@@ -584,12 +589,21 @@
     ui.colorHint.textContent = t('generalHint');
   }
 
+  // 色票名稱與值可能來自頁面的 CSS 變數，組成 HTML 前先跳脫，避免變成可執行的屬性
   function swatchHtml(name, value) {
-    return `<button type="button" class="wta-swatch" style="background:${value}" data-color="${name}" data-value="${value}" title="${name}" aria-label="${name}"></button>`;
+    const n = escapeHtml(name);
+    const v = escapeHtml(value);
+    return `<button type="button" class="wta-swatch" style="background:${v}" data-color="${n}" data-value="${v}" title="${n}" aria-label="${n}"></button>`;
   }
 
   function chipHtml(name, value) {
-    return `<button type="button" class="wta-chip" data-color="${name}" data-value="${value}" title="${name}"><span class="wta-chip-dot" style="background:${value}"></span>${name}</button>`;
+    const n = escapeHtml(name);
+    const v = escapeHtml(value);
+    return `<button type="button" class="wta-chip" data-color="${n}" data-value="${v}" title="${n}"><span class="wta-chip-dot" style="background:${v}"></span>${n}</button>`;
+  }
+
+  function escapeHtml(text) {
+    return String(text).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   }
 
   // 在游標位置插入顏色名稱 (前後緊接英數字時補空白)，關閉色票區後回到輸入框

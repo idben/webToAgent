@@ -78,9 +78,16 @@ Projects with a dev server (Vite + Vue / React, etc.) use proxy mode, with no ch
 - The input box appears below the element by default, or above it when there isn't enough room; it repositions while scrolling and stays inside the viewport
 - The queue is kept in `sessionStorage` (per tab), so it survives reloads and page changes; up to 50 requests per batch
 
+## Using in a sandbox
+
+- If the Claude Code sandbox blocks file watching, the server falls back to polling the preview folder every second, so auto-reload keeps working (polling stops for folders with more than 5000 files; reload the page manually then)
+- The server only prints the preview URL; open it in your browser yourself
+- The server needs a local port the sandbox allows (default 5600, or pass `--port`)
+
 ## Security
 
 - Runs only on local `127.0.0.1`, never exposed to the network
 - Accepts requests only from the preview page itself; other websites can't submit
 - Can read only files inside the preview folder
+- Rejects requests whose Host isn't `127.0.0.1` / `localhost`, blocking DNS rebinding
 - Proxy mode forwards only to a local dev server (`localhost` / `127.0.0.1`)

@@ -29,11 +29,13 @@ description: 在瀏覽器預覽 HTML (或 Vue / React 等 dev server 專案) 並
    ```
    - proxy 模式要請使用者開 webToAgent 的網址（`[WTA:ready]` 那行），不是 dev server 原本的網址，才會有圈選工具
 3. **確認啟動**：等 `.webtoagent/server.log` 出現 `[WTA:ready]`，從該行取得實際網址交給使用者；出現 `[WTA:error]` 就回報原因。
+   - `[WTA:warn]` 不是啟動失敗 (仍以 `[WTA:ready]` 為準)：`改用輪詢` 表示檔案監看被擋 (例：沙箱)，自動重新整理仍有效，不需告知；`自動重新整理停用` 才告知使用者修改後要手動重新整理頁面
 4. **開始監看**（Monitor，`timeout_ms` 設最大值）：
    ```bash
-   tail -n 0 -f .webtoagent/server.log | grep -E --line-buffered "^\[WTA\]|\[WTA:error\]|Error"
+   tail -n 0 -f .webtoagent/server.log | grep -E --line-buffered "^\[WTA\]|\[WTA:error\]|\[WTA:warn\]|Error"
    ```
    Monitor 到期時重新啟動監看，直到使用者說結束。
+   - **重新監看前先補漏**：`tail -n 0` 不會帶出空窗期寫入的批次。重新啟動 Monitor 後，讀 `.webtoagent/inbox.jsonl` 找出 `status` 為 `pending` 的 batchId，排除本 session 已收到通知或已列過清單的 batchId，剩下的依「收到批次需求」流程處理
 5. **檢查 `.gitignore`**：目前專案若是 git repo 且 `.gitignore` 沒有 `.webtoagent/`，🔸 詢問是否加入 (選項：加入 (Recommended) / 不用)（inbox 含頁面片段與需求內容，不應進版控）。
 6. **Vue 專案提示加裝 vite-plugin-vue-devtools**（只在 proxy 模式）：`package.json` 有 `vue` 但沒有 `vite-plugin-vue-devtools` 時，啟動完成後提示一次：
    - 說明：裝了它，需求才會帶行號；沒有也能用，只會有檔案

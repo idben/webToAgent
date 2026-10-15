@@ -17,6 +17,10 @@ const host = '127.0.0.1';
 const inboxDir = path.resolve('.webtoagent');
 const inboxFile = path.join(inboxDir, 'inbox.jsonl');
 const maxBody = 256 * 1024;
+const maxDrain = 32 * 1024 * 1024;
+const pollInterval = 1000;
+const maxPollFiles = 5000;
+const pollSkip = new Set(['node_modules', '.git', '.webtoagent']);
 const maxItems = 50;
 const statusValues = ['pending', 'done', 'skipped'];
 const injectTag = proxyTarget
@@ -48,6 +52,7 @@ if (rootDir && (!fs.existsSync(rootDir) || !fs.statSync(rootDir).isDirectory()))
 fs.mkdirSync(inboxDir, { recursive: true });
 
 const server = http.createServer((req, res) => {
+  if (!isAllowedHost(req)) return sendText(res, 403, 'Forbidden host');
   const url = new URL(req.url, `http://${host}:${port}`);
 
   if (url.pathname === '/api/feedback' && req.method === 'POST') return handleFeedback(req, res);
@@ -154,7 +159,7 @@ function proxyRequest(req, res) {
 
 // WebSocket upgrade 轉送 (Vite HMR 等)，連上後兩端 socket 直接對接
 function proxyUpgrade(req, socket, head) {
-  if (req.headers[loopHeader]) return socket.destroy();
+  if (req.headers[loopHeader] || !isAllowedHost(req)) return socket.destroy();
   const proxyReq = http.request({
     hostname: proxyTarget.hostname,
     port: proxyTarget.port || 80,
@@ -227,6 +232,12 @@ function sendJson(res, status, obj) {
   res.end(JSON.stringify(obj));
 }
 
+// Host 只接受本機位址，阻擋 DNS 重綁定 (DNS rebinding) 讓外站讀到預覽內容或轉送到 dev server
+function isAllowedHost(req) {
+  const value = req.headers.host;
+  return value === `${host}:${port}` || value === `localhost:${port}`;
+}
+
 // 只接受本機同源請求，避免其他網站跨站送出假需求
 function isSameOrigin(req) {
   const origin = req.headers.origin;
@@ -234,21 +245,21 @@ function isSameOrigin(req) {
   return origin === `http://${host}:${port}` || origin === `http://localhost:${port}`;
 }
 
-// 讀取 JSON body，超過上限或格式錯誤時直接回應錯誤，成功才呼叫 callback function
+// 讀取 JSON body，超過上限或格式錯誤時回應錯誤，成功才呼叫 callback function
+// 超過上限時把剩餘內容讀完丟棄再回 413，直接切斷會讓瀏覽器收到連線重設而不是 413
 function readJsonBody(req, res, callback) {
   let size = 0;
   const chunks = [];
   req.on('data', (chunk) => {
     size += chunk.length;
-    if (size > maxBody) {
-      sendJson(res, 413, { ok: false, error: 'payload too large' });
-      req.destroy();
-      return;
-    }
-    chunks.push(chunk);
+    if (size > maxDrain) return req.destroy();
+    if (size <= maxBody) chunks.push(chunk);
   });
   req.on('end', () => {
-    if (res.writableEnded) return;
+    if (size > maxBody) {
+      res.setHeader('Connection', 'close');
+      return sendJson(res, 413, { ok: false, error: 'payload too large' });
+    }
     let data;
     try {
       data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -283,9 +294,10 @@ function handleFeedback(req, res) {
     } catch {
       return sendJson(res, 500, { ok: false, error: 'write failed' });
     }
-    const files = [...new Set(records.map((r) => describeTarget(r, false)))].join(', ');
+    // 寫進 log 的欄位壓成一行，避免換行偽造出 [WTA] 通知行
+    const files = [...new Set(records.map((r) => oneLine(describeTarget(r, false))))].join(', ');
     const output = [`[WTA] batch ${batchId} ${records.length} items :: ${files}`];
-    for (const r of records) output.push(`[WTA]   #${r.no} ${describeTarget(r, true)} ${r.selector} :: ${r.instruction.replace(/\s+/g, ' ')}`);
+    for (const r of records) output.push(`[WTA]   #${r.no} ${oneLine(describeTarget(r, true))} ${oneLine(r.selector)} :: ${oneLine(r.instruction)}`);
     console.log(output.join('\n'));
     sendJson(res, 200, { ok: true, batchId, count: records.length });
   });
@@ -409,6 +421,11 @@ function describeTarget(record, withLine) {
   return record.page;
 }
 
+// 控制字元與 Unicode 行分隔符號換成空白，連續空白壓成一個
+function oneLine(text) {
+  return String(text).replace(/[\u0000-\u001f\u007f\u2028\u2029\s]+/g, ' ').trim();
+}
+
 function createId() {
   const now = new Date();
   const pad = (n) => String(n).padStart(2, '0');
@@ -433,12 +450,76 @@ function handleEvents(req, res) {
 }
 
 // 預覽資料夾內檔案變更時通知頁面重新整理（debounce 避免連續寫檔觸發多次）
+// 監看失敗 (沙箱阻擋、EMFILE 等) 改用輪詢，server 繼續執行
 function watchRoot() {
   let timer = null;
-  fs.watch(rootDir, { recursive: true }, () => {
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      for (const client of sseClients) client.write('event: reload\ndata: {}\n\n');
-    }, 150);
+  let watcher;
+  try {
+    watcher = fs.watch(rootDir, { recursive: true }, () => {
+      clearTimeout(timer);
+      timer = setTimeout(notifyReload, 150);
+    });
+  } catch (err) {
+    return pollRoot(err);
+  }
+  watcher.on('error', (err) => {
+    watcher.close();
+    pollRoot(err);
   });
+}
+
+function notifyReload() {
+  for (const client of sseClients) client.write('event: reload\ndata: {}\n\n');
+}
+
+// 每秒比對資料夾簽章 (路徑 + mtime + size)，只在有頁面連線時掃描；檔案過多時停用
+function pollRoot(err) {
+  console.log(`[WTA:warn] 無法監看資料夾變更 (${err.code || err.message})，改用輪詢 (每 ${pollInterval / 1000} 秒)`);
+  let last = null;
+  const timer = setInterval(() => {
+    if (!sseClients.size) {
+      last = null;
+      return;
+    }
+    const signature = scanSignature(rootDir);
+    if (signature === null) {
+      clearInterval(timer);
+      console.log(`[WTA:warn] 預覽資料夾檔案超過 ${maxPollFiles} 個，自動重新整理停用`);
+      return;
+    }
+    if (last !== null && signature !== last) notifyReload();
+    last = signature;
+  }, pollInterval);
+}
+
+// 走訪資料夾組出簽章字串，超過檔案上限時回傳 null
+function scanSignature(dir) {
+  const parts = [];
+  const stack = [dir];
+  while (stack.length) {
+    const current = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (pollSkip.has(entry.name)) continue;
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(full);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (parts.length >= maxPollFiles) return null;
+      try {
+        const stat = fs.statSync(full);
+        parts.push(`${full}|${stat.mtimeMs}|${stat.size}`);
+      } catch {
+        // 掃描途中被刪除的檔案略過
+      }
+    }
+  }
+  return parts.sort().join('\n');
 }

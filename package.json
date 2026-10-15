@@ -1,9 +1,12 @@
 {
   "name": "web-to-agent",
-  "version": "0.4.1",
+  "version": "0.4.3",
   "private": true,
   "type": "module",
   "description": "在瀏覽器圈選 HTML 元素，把修改需求送到 CLI Agent",
+  "scripts": {
+    "test": "node --test test/server.test.mjs"
+  },
   "engines": {
     "node": ">=20"
   }

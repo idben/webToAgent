@@ -49,6 +49,7 @@ Choose the usage that fits your project:
 - After you pick elements, write requests, and submit them in the browser, Claude Code lists the planned changes first and edits only after you confirm
 - The page reloads automatically after the changes
 - Requests are stored in the project's `.webtoagent/` folder; adding it to `.gitignore` is recommended
+- Only one server can run per project; starting another one tells you to reuse the existing URL
 - Skill names must be lowercase, so the command is `/webtoagent`
 
 ### Vue / React projects
@@ -85,16 +86,20 @@ Projects with a dev server (Vite + Vue / React, etc.) use proxy mode, with no ch
 - A server started inside the sandbox can't listen on a port by default. Pick one:
   - **Run the server outside the sandbox (any platform)**: add this to `~/.claude/settings.json`. Project-level `.claude/settings*.json` entries are ignored when an admin requires the sandbox
     ```json
-    { "sandbox": { "excludedCommands": ["node *webtoagent/server.js *"] } }
+    { "sandbox": { "excludedCommands": ["node /Users/<you>/.claude/skills/webtoagent/server.js *"] } }
     ```
+    Use the full path to server.js: with a wildcard right after `node` (e.g. `node *webtoagent/server.js *`), commands like `node --require <other file> …` also match and run outside the sandbox too
   - **Keep it sandboxed on macOS**: set `"sandbox": { "network": { "allowLocalBinding": true } }`
   - **Linux / WSL2**: each sandboxed command has its own loopback, so the browser can't reach a server started in the sandbox. Use `excludedCommands` above, or run `node ~/.claude/skills/webtoagent/server.js <folder> --log .webtoagent/server.log` in your own terminal from the project root, then tell Claude it's running
+  - **Proxy mode on Linux / WSL2**: once the server runs outside the sandbox it can't reach a dev server started inside it, so start the dev server in your own terminal as well (based on the official docs, not yet tested)
 
 ## Security
 
 - Runs only on local `127.0.0.1`, never exposed to the network
 - Accepts requests only from the preview page itself; other websites can't submit
-- Can read only files inside the preview folder
+- Can read only files inside the preview folder, even through symlinks pointing outside it
+- File paths in requests that fall outside the project (git root) are dropped, so Claude isn't pointed at files outside the project
+- Scripts on the preview page itself (including third-party scripts) can also submit requests, which is why Claude lists changes and waits for your confirmation
 - Rejects requests whose Host isn't `127.0.0.1` / `localhost`, blocking DNS rebinding
 - Preview pages can't be embedded in an iframe by other websites
 - Proxy mode forwards only to a local dev server (`localhost` / `127.0.0.1`)

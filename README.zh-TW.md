@@ -49,6 +49,7 @@ scripts/install-skill.sh
 - 在瀏覽器圈選元素、寫下需求、確認送出後，Claude Code 會先列出修改清單，等你確認才修改
 - 改完後頁面自動重新整理
 - 需求紀錄存在該專案的 `.webtoagent/`，建議加入 `.gitignore`
+- 同一個專案同時只能執行一個 server，重複啟動時會提示沿用既有的網址
 - skill 名稱規定只能用小寫，所以指令是 `/webtoagent`
 
 ### Vue / React 專案
@@ -85,16 +86,20 @@ scripts/install-skill.sh
 - 沙箱內啟動的 server 預設無法監聽 port，擇一處理：
   - **讓 server 在沙箱外執行 (各平台通用)**：在 `~/.claude/settings.json` 加入下列設定。專案層級的 `.claude/settings*.json` 在管理員強制沙箱時會被忽略
     ```json
-    { "sandbox": { "excludedCommands": ["node *webtoagent/server.js *"] } }
+    { "sandbox": { "excludedCommands": ["node /Users/<you>/.claude/skills/webtoagent/server.js *"] } }
     ```
+    請寫 server.js 的完整路徑：萬用字元放在 `node` 後面 (例：`node *webtoagent/server.js *`) 時，`node --require <其他檔案> …` 這類指令也會符合，同樣在沙箱外執行
   - **macOS 留在沙箱內**：開 `"sandbox": { "network": { "allowLocalBinding": true } }`
   - **Linux / WSL2**：每個沙箱指令有自己的 loopback，沙箱內啟動的 server 瀏覽器連不到，請用上面的 `excludedCommands`，或在專案根目錄自己開終端機執行 `node ~/.claude/skills/webtoagent/server.js <資料夾> --log .webtoagent/server.log`，再告訴 Claude 已經啟動
+  - **Linux / WSL2 的 proxy 模式**：server 移出沙箱後連不到沙箱內啟動的 dev server，dev server 也請在自己的終端機啟動 (依官方文件判斷，尚未實測)
 
 ## 安全
 
 - 只在本機 `127.0.0.1` 執行，不對外網路開放
 - 只接受預覽頁面本身送出的需求，其他網站無法送出
-- 只能讀取預覽資料夾內的檔案
+- 只能讀取預覽資料夾內的檔案，符號連結指到資料夾外也讀不到
+- 需求帶的檔案路徑在專案 (git 根目錄) 外時會被忽略，不會讓 Claude 去改專案外的檔案
+- 預覽頁面本身的腳本 (含第三方腳本) 也能送出需求，所以 Claude 會先列清單，等你確認才修改
 - Host 不是 `127.0.0.1` / `localhost` 的請求一律拒絕，防止 DNS 重綁定 (DNS rebinding) 攻擊
 - 預覽頁不能被其他網站用 iframe 嵌入
 - proxy 模式只能轉送到本機（`localhost` / `127.0.0.1`）的 dev server

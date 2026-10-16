@@ -22,6 +22,11 @@ for arg in "$@"; do
   esac
 done
 
+# 去掉結尾的 /：捷徑路徑帶 / 時 [ -L ] 會判成指向的資料夾，接著 rm -rf 會刪掉捷徑指向的內容
+while [ "${target}" != "/" ] && [ "${target%/}" != "${target}" ]; do
+  target="${target%/}"
+done
+
 for f in "${files[@]}"; do
   if [ ! -e "${projectDir}/${f}" ]; then
     echo "✗ 找不到 ${f}，請在 webToAgent 專案中執行" >&2

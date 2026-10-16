@@ -181,15 +181,253 @@ test('proxy 指向自己：回 508', async () => {
   assert.equal((await request(srv, { path: '/' })).status, 508);
 });
 
+test('JSON 不是物件時回 400，server 繼續執行', async () => {
+  const srv = await startServer([siteDir]);
+  for (const body of ['null', '[]', '1', '"x"']) {
+    for (const urlPath of ['/api/feedback', '/api/status']) {
+      const res = await request(srv, { method: 'POST', path: urlPath, headers: { Origin: srv.origin }, body });
+      assert.equal(res.status, 400, `${urlPath} ${body}`);
+    }
+  }
+  assert.equal(srv.child.exitCode, null);
+  assert.equal((await postJson(srv, '/api/feedback', { items: [{ selector: 'h1', instruction: 'ok' }] })).status, 200);
+});
+
+test('inbox 有 null 行或壞行時，/api/status 照常更新', async () => {
+  const srv = await startServer([siteDir]);
+  const res = await postJson(srv, '/api/feedback', { items: [{ selector: 'h1', instruction: 'ok' }] });
+  const id = `${JSON.parse(res.body).batchId}-1`;
+  const inbox = path.join(srv.cwd, '.webtoagent', 'inbox.jsonl');
+  fs.appendFileSync(inbox, 'null\n{bad\n');
+  const status = await postJson(srv, '/api/status', { ids: [id], status: 'done' });
+  assert.deepEqual(JSON.parse(status.body), { ok: true, updated: 1, notFound: [] });
+  assert.equal(srv.child.exitCode, null);
+  const lines = fs.readFileSync(inbox, 'utf8').split('\n');
+  assert.ok(lines.includes('null') && lines.includes('{bad'));
+  assert.deepEqual(fs.readdirSync(path.dirname(inbox)).filter((f) => f.endsWith('.tmp')), []);
+});
+
+test('同一個專案只允許一個 server，結束後可重新啟動', async () => {
+  const first = await startServer([siteDir]);
+  const lockFile = path.join(first.cwd, '.webtoagent', 'server.lock');
+  assert.equal(JSON.parse(fs.readFileSync(lockFile, 'utf8')).port, first.port);
+
+  const second = await runServer(first.cwd, [siteDir, '--port', String(randomPort())]);
+  assert.equal(second.code, 1);
+  assert.match(second.out, /\[WTA:error\] 這個專案已有 webToAgent server 在執行/);
+  assert.match(second.out, new RegExp(`127\\.0\\.0\\.1:${first.port}`));
+
+  first.child.kill('SIGTERM');
+  await waitFor(() => !fs.existsSync(lockFile));
+  // 被強制終止留下的鎖檔 (行程已不存在) 不擋啟動
+  fs.writeFileSync(lockFile, JSON.stringify({ pid: 2147483646, port: 1 }));
+  const third = await startServer([siteDir], { cwd: first.cwd });
+  assert.equal(third.child.exitCode, null);
+});
+
+test('鎖檔內容無法辨識時不接管，避免與執行中的 server 共用 inbox', async () => {
+  const cwd = fs.mkdtempSync(path.join(tmpRoot, 'cwd-'));
+  fs.mkdirSync(path.join(cwd, '.webtoagent'));
+  for (const content of ['', '{bad', '[]', '"x"']) {
+    fs.writeFileSync(path.join(cwd, '.webtoagent', 'server.lock'), content);
+    const result = await runServer(cwd, [siteDir, '--port', String(randomPort())]);
+    assert.equal(result.code, 1, JSON.stringify(content));
+    assert.match(result.out, /內容無法辨識/);
+  }
+});
+
+test('留有舊鎖檔時多個 server 同時啟動，只有一個成功', async () => {
+  for (let round = 0; round < 3; round++) {
+    const cwd = fs.mkdtempSync(path.join(tmpRoot, 'cwd-'));
+    fs.mkdirSync(path.join(cwd, '.webtoagent'));
+    fs.writeFileSync(path.join(cwd, '.webtoagent', 'server.lock'), JSON.stringify({ pid: 2147483646, port: 1 }));
+    const results = await Promise.all(Array.from({ length: 6 }, () => startOrExit(cwd, [siteDir, '--port', String(randomPort())])));
+    assert.equal(results.filter((r) => r === 'ready').length, 1, results.join(','));
+  }
+});
+
+test('頁面腳本字串裡的 </body> 不影響注入位置', async () => {
+  const dir = fs.mkdtempSync(path.join(tmpRoot, 'site-'));
+  fs.writeFileSync(path.join(dir, 'inscript.html'), `<!doctype html><html><body><script>window.__tpl = '<p></p></body></html>';</script></body></html>`);
+  fs.writeFileSync(path.join(dir, 'trailer.html'), '<!doctype html><html><body><p>x</p></body></html>\n<!-- generated: </body> -->');
+  const srv = await startServer([dir]);
+  const page = await request(srv, { path: '/inscript.html' });
+  assert.ok(page.body.includes(`window.__tpl = '<p></p></body></html>';</script>`), page.body);
+  assert.ok(page.body.indexOf('/__wta/picker.js') > page.body.indexOf('</script>'));
+  const trailer = await request(srv, { path: '/trailer.html' });
+  assert.ok(trailer.body.indexOf('/__wta/picker.js') < trailer.body.indexOf('<!--'), trailer.body);
+});
+
+test('需求的檔案路徑只接受專案內', async () => {
+  const cwd = fs.mkdtempSync(path.join(tmpRoot, 'proj-'));
+  fs.mkdirSync(path.join(cwd, '.git'));
+  fs.mkdirSync(path.join(cwd, 'src'));
+  fs.writeFileSync(path.join(cwd, 'src', 'App.vue'), '');
+  const srv = await startServer([siteDir], { cwd });
+  const items = [
+    ['~/.zshrc', null],
+    ['../outside.vue', null],
+    [path.join(tmpRoot, 'secret.txt'), null],
+    [path.join(cwd, 'src', 'App.vue'), path.join('src', 'App.vue')],
+    ['/src/Foo.vue', 'src/Foo.vue']
+  ];
+  const res = await postJson(srv, '/api/feedback', {
+    items: items.map(([file]) => ({ selector: 'h1', instruction: 'x', source: { framework: 'vue', file, component: 'C', usedIn: { file } } }))
+  });
+  assert.equal(res.status, 200);
+  const records = readInbox(srv);
+  items.forEach(([file, expected], i) => {
+    assert.equal(records[i].source.file, expected, file);
+    assert.equal(records[i].source.usedIn ? records[i].source.usedIn.file : null, expected, `usedIn ${file}`);
+    assert.equal(records[i].source.component, 'C');
+  });
+});
+
+test('monorepo：在子資料夾啟動時，同一個 git repo 內的共用套件仍算專案內', async () => {
+  const mono = fs.mkdtempSync(path.join(tmpRoot, 'mono-'));
+  fs.mkdirSync(path.join(mono, '.git'));
+  fs.mkdirSync(path.join(mono, 'apps', 'web'), { recursive: true });
+  fs.mkdirSync(path.join(mono, 'packages', 'ui'), { recursive: true });
+  fs.writeFileSync(path.join(mono, 'packages', 'ui', 'Button.vue'), '');
+  const srv = await startServer([siteDir], { cwd: path.join(mono, 'apps', 'web') });
+  const file = path.join(mono, 'packages', 'ui', 'Button.vue');
+  const res = await postJson(srv, '/api/feedback', { items: [{ selector: 'h1', instruction: 'x', source: { framework: 'vue', file, component: 'Button' } }] });
+  assert.equal(res.status, 200);
+  assert.equal(readInbox(srv)[0].source.file, path.join('..', '..', 'packages', 'ui', 'Button.vue'));
+});
+
+test('computed 與 viewport 只保留 picker 會送的欄位', async () => {
+  const srv = await startServer([siteDir]);
+  const computed = { color: 'red', fontSize: 'x'.repeat(500), junk: 'y'.repeat(50000), nested: { a: 1 }, width: 10 };
+  const res = await postJson(srv, '/api/feedback', { items: [{ selector: 'h1', instruction: 'x', computed, viewport: { w: 375, h: 812, junk: 'z' } }, { selector: 'h1', instruction: 'y', viewport: { w: '1' } }] });
+  assert.equal(res.status, 200);
+  const [first, second] = readInbox(srv);
+  assert.deepEqual(first.computed, { color: 'red', fontSize: 'x'.repeat(200) });
+  assert.deepEqual(first.viewport, { w: 375, h: 812 });
+  assert.equal(second.viewport, null);
+});
+
+test('符號連結指到預覽資料夾外時回 404', async () => {
+  const dir = fs.mkdtempSync(path.join(tmpRoot, 'site-'));
+  fs.writeFileSync(path.join(dir, 'a.html'), '<p>a</p>');
+  fs.symlinkSync(path.join(tmpRoot, 'secret.txt'), path.join(dir, 'leak.txt'));
+  fs.symlinkSync(path.join(dir, 'a.html'), path.join(dir, 'alias.html'));
+  const srv = await startServer([dir]);
+  assert.equal((await request(srv, { path: '/leak.txt' })).status, 404);
+  assert.equal((await request(srv, { path: '/alias.html' })).status, 200);
+});
+
+test('install-skill.sh：目標是帶 / 的捷徑時只移除捷徑，不刪捷徑指向的資料夾', async () => {
+  const base = fs.mkdtempSync(path.join(tmpRoot, 'install-'));
+  const real = path.join(base, 'real');
+  fs.mkdirSync(real);
+  fs.writeFileSync(path.join(real, '.webtoagent-skill'), '');
+  fs.writeFileSync(path.join(real, 'keep.txt'), 'keep');
+  fs.symlinkSync(real, path.join(base, 'link'));
+  const script = path.resolve(path.dirname(serverJs), 'scripts', 'install-skill.sh');
+  const result = await new Promise((resolve) => {
+    const child = spawn('bash', [script, `${path.join(base, 'link')}/`]);
+    child.on('exit', resolve);
+  });
+  assert.equal(result, 0);
+  assert.equal(fs.readFileSync(path.join(real, 'keep.txt'), 'utf8'), 'keep');
+  assert.ok(fs.existsSync(path.join(base, 'link', 'server.js')));
+});
+
+test('靜態模式：.mjs 以 JavaScript 類型回應', async () => {
+  const dir = fs.mkdtempSync(path.join(tmpRoot, 'site-'));
+  fs.writeFileSync(path.join(dir, 'a.mjs'), 'export {};');
+  const srv = await startServer([dir]);
+  const res = await request(srv, { path: '/a.mjs' });
+  assert.equal(res.status, 200);
+  assert.match(res.headers['content-type'], /^text\/javascript/);
+});
+
+test('--log 沒帶值或無法寫入：結束並在 stderr 印 [WTA:error]', async () => {
+  const cwd = fs.mkdtempSync(path.join(tmpRoot, 'cwd-'));
+  fs.mkdirSync(path.join(cwd, 'logdir'));
+  for (const args of [[siteDir, '--log'], [siteDir, '--log', '--port', '5600'], [siteDir, '--log', 'logdir']]) {
+    const result = await runServer(cwd, args);
+    assert.equal(result.code, 1, args.join(' '));
+    assert.match(result.out, /\[WTA:error\]/, args.join(' '));
+  }
+});
+
+test('proxy 模式：identity 照常注入，壓縮的 HTML 原樣轉送並提示', async () => {
+  const dev = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/html', 'Content-Encoding': req.url === '/gzip' ? 'gzip' : 'identity' });
+    res.end('<html><body>dev</body></html>');
+  });
+  await new Promise((resolve) => dev.listen(0, '127.0.0.1', resolve));
+  try {
+    const srv = await startServer(['--proxy', `http://127.0.0.1:${dev.address().port}`]);
+    assert.match((await request(srv, { path: '/' })).body, /data-wta-mode="proxy"/);
+    const gzip = await request(srv, { path: '/gzip' });
+    assert.doesNotMatch(gzip.body, /__wta/);
+    await waitFor(() => /\[WTA:warn\] dev server 回傳壓縮的 HTML/.test(srv.output()));
+  } finally {
+    dev.close();
+  }
+});
+
+test('Vite /@fs/ 路徑：專案內轉成相對路徑，專案外存 null', async () => {
+  const cwd = fs.mkdtempSync(path.join(tmpRoot, 'proj-'));
+  fs.mkdirSync(path.join(cwd, '.git'));
+  fs.mkdirSync(path.join(cwd, 'src'));
+  fs.writeFileSync(path.join(cwd, 'src', 'App.vue'), '');
+  const srv = await startServer([siteDir], { cwd });
+  const files = [`/@fs${path.join(cwd, 'src', 'App.vue')}`, `/@fs${path.join(tmpRoot, 'secret.txt')}`];
+  const res = await postJson(srv, '/api/feedback', { items: files.map((file) => ({ selector: 'h1', instruction: 'x', source: { framework: 'vue', file, component: 'C' } })) });
+  assert.equal(res.status, 200);
+  const [inside, outside] = readInbox(srv);
+  assert.equal(inside.source.file, path.join('src', 'App.vue'));
+  assert.equal(outside.source.file, null);
+});
+
 // ---------- functions ----------
+
+// 在指定資料夾啟動 server 並等它結束，回傳結束碼與輸出 (用於預期啟動失敗的情況)；5 秒沒結束就終止並回傳 code null
+function runServer(cwd, args) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [serverJs, ...args], { cwd });
+    running.add(child);
+    let out = '';
+    child.stdout.on('data', (chunk) => (out += chunk));
+    child.stderr.on('data', (chunk) => (out += chunk));
+    const timer = setTimeout(() => child.kill(), 5000);
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      running.delete(child);
+      resolve({ code, out });
+    });
+  });
+}
+
+// 啟動 server，回傳 'ready' 或 'exit'；ready 的會在測試結束時由 after() 結束
+function startOrExit(cwd, args) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [serverJs, ...args], { cwd });
+    running.add(child);
+    let out = '';
+    const onData = (chunk) => {
+      out += chunk;
+      if (out.includes('[WTA:ready]')) resolve('ready');
+    };
+    child.stdout.on('data', onData);
+    child.stderr.on('data', onData);
+    child.on('exit', () => {
+      running.delete(child);
+      resolve('exit');
+    });
+  });
+}
 
 function randomPort() {
   return 20000 + Math.floor(Math.random() * 20000);
 }
 
 // 啟動 server 子行程，等到 [WTA:ready] 後回傳連線資訊
-async function startServer(args, { mock = null, port = randomPort() } = {}) {
-  const cwd = fs.mkdtempSync(path.join(tmpRoot, 'cwd-'));
+async function startServer(args, { mock = null, port = randomPort(), cwd = fs.mkdtempSync(path.join(tmpRoot, 'cwd-')) } = {}) {
   const nodeArgs = mock ? ['--import', mock, serverJs] : [serverJs];
   const child = spawn(process.execPath, [...nodeArgs, ...args, '--port', String(port)], { cwd });
   running.add(child);
